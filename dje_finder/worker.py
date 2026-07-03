@@ -1,15 +1,18 @@
 import threading
 import requests
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from dje_finder.config import Config, TokenBucket, logger
 from dje_finder.network import PDFDiscovery, DownloadManager
+from dje_finder.indexer import PDFIndexer
 
 class WorkerController:
     def __init__(self, index_mgr, state_mgr, gui_queue):
         self.index_mgr = index_mgr
         self.state_mgr = state_mgr
         self.gui_queue = gui_queue
+        self.indexer = PDFIndexer()
         self.executor = None
         self.running = False
         self.paused = False
@@ -288,6 +291,7 @@ class WorkerController:
     def process_date(self, date_str):
         if DownloadManager.is_downloaded(date_str):
             self.index_mgr.add_pdf(date_str)
+            self.indexer.index_pdf(date_str)
             return "EXISTE", date_str, None
         
         res = PDFDiscovery.check_and_stream(date_str)
@@ -301,6 +305,7 @@ class WorkerController:
                 return "ERRO", date_str, save_res
             else:
                 self.index_mgr.add_pdf(date_str)
+                self.indexer.index_pdf(date_str)
                 return "BAIXADO", date_str, None
 
     def future_done(self, future, date_str):
@@ -366,6 +371,10 @@ class WorkerController:
         if self.executor:
             self.executor.shutdown(wait=False, cancel_futures=True)
 
+    def stop_indexing(self):
+        """Sinaliza o indexador para interromper o processo de indexação em segundo plano."""
+        self.indexer.stop()
+
     def send_gui_update(self, date_str, err):
         self.gui_queue.put({
             "type": "update",
@@ -379,3 +388,67 @@ class WorkerController:
             "total_bytes": self.total_bytes,
             "processed_dates": self.processed_dates
         })
+
+    def start_background_indexing(self):
+        def run_indexing():
+            logger.info("Iniciando indexação em segundo plano dos PDFs pendentes...")
+            start_time = time.time()
+            
+            # Envia progresso inicial
+            stats = self.indexer.get_stats()
+            pending = self.indexer.get_pending_dates()
+            
+            self.gui_queue.put({
+                "type": "index_progress",
+                "current": 0,
+                "total": len(pending),
+                "last_date": "",
+                "stats": stats,
+                "elapsed": 0,
+                "eta": 0,
+                "speed": 0
+            })
+            
+            last_gui_update_time = [0.0]
+            last_stats_query_time = [0.0]
+            current_stats = [stats]
+            
+            def progress_cb(current, total, last_date):
+                now = time.time()
+                is_last = (current == total)
+                
+                # Limita as atualizações da GUI a no máximo uma vez a cada 0.1s para não engasgar a interface
+                if not is_last and (now - last_gui_update_time[0] < 0.1):
+                    return
+                
+                last_gui_update_time[0] = now
+                elapsed = now - start_time
+                speed = current / elapsed if current > 0 and elapsed > 0 else 0
+                eta = (total - current) / speed if speed > 0 else 0
+                
+                # Limita as consultas de estatísticas ao banco a no máximo uma vez por segundo
+                if now - last_stats_query_time[0] >= 1.0 or is_last:
+                    current_stats[0] = self.indexer.get_stats()
+                    last_stats_query_time[0] = now
+                
+                self.gui_queue.put({
+                    "type": "index_progress",
+                    "current": current,
+                    "total": total,
+                    "last_date": last_date,
+                    "stats": current_stats[0],
+                    "elapsed": elapsed,
+                    "eta": eta,
+                    "speed": speed
+                })
+            
+            self.indexer.index_all_pending(progress_cb)
+            
+            self.gui_queue.put({
+                "type": "index_done",
+                "stats": self.indexer.get_stats()
+            })
+            logger.info("Indexação em segundo plano concluída.")
+
+        t = threading.Thread(target=run_indexing, daemon=True)
+        t.start()

@@ -11,6 +11,7 @@ from dje_finder.config import Config
 from dje_finder.persistence import IndexManager, StateManager, init_db, get_db_connection
 from dje_finder.network import DownloadManager, PDFDiscovery
 from dje_finder.worker import WorkerController
+from dje_finder.indexer import PDFIndexer
 
 class FakeResponse:
     def __init__(self, chunks):
@@ -476,6 +477,155 @@ class SyncBehaviorTests(unittest.TestCase):
 
         types = [m["type"] for m in msgs]
         self.assertIn("portal_unstable", types)
+
+
+class IndexerTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.temporary_directory.name)
+        self.config_patchers = [
+            patch.object(Config, "BASE_DIR", self.base_dir),
+            patch.object(Config, "INDEX_FILE", self.base_dir / "indice.json"),
+            patch.object(Config, "STATE_FILE", self.base_dir / "estado.json"),
+            patch.object(Config, "DB_FILE", self.base_dir / "dje_finder.db"),
+        ]
+        for patcher in self.config_patchers:
+            patcher.start()
+        init_db()
+
+    def tearDown(self):
+        for patcher in reversed(self.config_patchers):
+            patcher.stop()
+        self.temporary_directory.cleanup()
+
+    def create_mock_pdf(self, date_str, pages_content):
+        import fitz
+        year = date_str[:4]
+        pdf_dir = self.base_dir / year
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = pdf_dir / f"dpj-{date_str}.pdf"
+        
+        doc = fitz.open()
+        for text in pages_content:
+            page = doc.new_page()
+            page.insert_text((50, 50), text)
+        doc.save(pdf_path)
+        doc.close()
+        return pdf_path
+
+    def test_indexer_extracts_and_saves_content_in_fts5(self):
+        date_str = "20260101"
+        content_p1 = "Esta e a comarca de Boa Vista no Estado de Roraima."
+        content_p2 = "Decisão judicial deferida pelo magistrado competente."
+        self.create_mock_pdf(date_str, [content_p1, content_p2])
+
+        indexer = PDFIndexer()
+        success = indexer.index_pdf(date_str)
+        self.assertTrue(success)
+
+        # Valida no banco de dados SQLite
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 1. Valida tabela indexed_pdfs
+        cursor.execute("SELECT status, error_message FROM indexed_pdfs WHERE date_str = ?", (date_str,))
+        status_row = cursor.fetchone()
+        self.assertIsNotNone(status_row)
+        self.assertEqual(status_row["status"], "SUCCESS")
+        self.assertIsNone(status_row["error_message"])
+
+        # 2. Valida busca FTS5 (busca case-insensitive e acentos ignorados)
+        cursor.execute("SELECT date_str, content FROM pdf_pages_fts WHERE pdf_pages_fts MATCH 'decisao'")
+        rows = cursor.fetchall()
+        self.assertEqual(len(rows), 1)
+        # Schema v2: texto de todas as páginas concatenado em uma única linha
+        self.assertIn("Decisão", rows[0]["content"])
+        self.assertIn("comarca", rows[0]["content"])  # texto da página 1 também está presente
+        
+        # 3. Valida estatísticas
+        stats = indexer.get_stats()
+        self.assertEqual(stats["total_indexados"], 1)
+        # Schema v2: 1 linha por PDF (não por página)
+        self.assertEqual(stats["total_paginas"], 1)
+        
+        conn.close()
+
+    def test_indexer_is_incremental_and_idempotent(self):
+        date_str = "20260102"
+        self.create_mock_pdf(date_str, ["Original text page 1"])
+        
+        indexer = PDFIndexer()
+        
+        # Registra o PDF na tabela pdfs de antemão
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO pdfs (date_str) VALUES (?)", (date_str,))
+        conn.commit()
+        conn.close()
+
+        # Primeira indexação
+        self.assertTrue(indexer.index_pdf(date_str))
+        
+        # Segunda indexação do mesmo PDF (deve limpar o anterior e reinserir sem duplicar)
+        self.assertTrue(indexer.index_pdf(date_str))
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM pdf_pages_fts WHERE date_str = ?", (date_str,))
+        count = cursor.fetchone()[0]
+        self.assertEqual(count, 1) # Não deve ter 2 registros duplicados!
+        conn.close()
+
+    def test_indexer_handles_corrupted_pdf_resiliently(self):
+        date_str = "20260103"
+        # Cria arquivo físico mas com conteúdo inválido (lixo)
+        year = date_str[:4]
+        pdf_dir = self.base_dir / year
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = pdf_dir / f"dpj-{date_str}.pdf"
+        pdf_path.write_bytes(b"Lixo corrompido que nao e PDF")
+
+        indexer = PDFIndexer()
+        success = indexer.index_pdf(date_str)
+        self.assertFalse(success) # Deve retornar False
+
+        # Valida que o erro foi gravado no status
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, error_message FROM indexed_pdfs WHERE date_str = ?", (date_str,))
+        row = cursor.fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "FAILED")
+        self.assertIsNotNone(row["error_message"])
+        conn.close()
+
+    def test_indexer_parallel_indexing_does_not_corrupt_database(self):
+        # 1. Cria 10 PDFs fictícios
+        dates = [f"202602{i:02d}" for i in range(1, 11)]
+        for date_str in dates:
+            self.create_mock_pdf(date_str, [f"Texto do PDF de data {date_str} na pagina 1"])
+
+        # 2. Registra na tabela pdfs
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.executemany("INSERT INTO pdfs (date_str) VALUES (?)", [(d,) for d in dates])
+        conn.commit()
+        conn.close()
+
+        # 3. Executa indexação em paralelo (4 workers concorrentes escrevendo no SQLite com WAL)
+        indexer = PDFIndexer()
+        indexed_count = indexer.index_all_pending(max_workers=4)
+        self.assertEqual(indexed_count, 10)
+
+        # 4. Valida se todos foram indexados
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM indexed_pdfs WHERE status = 'SUCCESS'")
+        self.assertEqual(cursor.fetchone()[0], 10)
+        
+        cursor.execute("SELECT COUNT(*) FROM pdf_pages_fts")
+        self.assertEqual(cursor.fetchone()[0], 10)
+        conn.close()
 
 
 if __name__ == "__main__":

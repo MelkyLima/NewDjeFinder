@@ -8,13 +8,14 @@ from dje_finder.config import Config, logger
 
 def get_db_connection():
     Config.DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(Config.DB_FILE)
+    conn = sqlite3.connect(Config.DB_FILE, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS pdfs (
             date_str TEXT PRIMARY KEY
@@ -31,11 +32,67 @@ def init_db():
             val TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS indexed_pdfs (
+            date_str TEXT PRIMARY KEY,
+            indexed_at TEXT,
+            status TEXT,
+            error_message TEXT
+        )
+    """)
+    # Schema v2: 1 linha por PDF (sem page_number) — muito mais rápido
+    cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS pdf_pages_fts USING fts5(
+            date_str UNINDEXED,
+            content,
+            tokenize='unicode61 remove_diacritics 1'
+        )
+    """)
     conn.commit()
     conn.close()
-    
-    # Executa a migração automática de JSON antigo se existir
+
+    # Migration automática: recria FTS5 se schema antigo (com page_number) for detectado
+    migrate_fts5_schema()
+    # Migration automática de JSON legado
     migrate_json_to_sqlite()
+
+
+def migrate_fts5_schema():
+    """Detecta e migra o schema FTS5 antigo (1 linha/página) para o novo (1 linha/PDF).
+    O schema antigo tem a coluna 'page_number'; o novo não tem.
+    Quando detectado, dropa e recria a tabela e limpa indexed_pdfs para re-indexação.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # Verifica se a tabela FTS5 existe e tem o schema antigo (coluna page_number)
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='pdf_pages_fts'")
+        row = cursor.fetchone()
+        if row and row[0] and 'page_number' in row[0]:
+            logger.info("Schema FTS5 antigo detectado (com page_number). Iniciando migração para schema v2...")
+            # Dropa tabela FTS5 e auxiliares geradas automaticamente pelo SQLite
+            cursor.execute("DROP TABLE IF EXISTS pdf_pages_fts")
+            # Recria com schema novo (sem page_number)
+            cursor.execute("""
+                CREATE VIRTUAL TABLE pdf_pages_fts USING fts5(
+                    date_str UNINDEXED,
+                    content,
+                    tokenize='unicode61 remove_diacritics 1'
+                )
+            """)
+            # Limpa indexed_pdfs para que todos os PDFs sejam re-indexados com o novo schema
+            cursor.execute("DELETE FROM indexed_pdfs")
+            conn.commit()
+            logger.info("Migração FTS5 schema v2 concluída. Todos os PDFs serão re-indexados.")
+    except sqlite3.Error as e:
+        logger.error(f"Erro durante migração FTS5: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+
 
 def migrate_json_to_sqlite():
     # 1. Migrar índice

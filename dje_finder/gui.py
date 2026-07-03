@@ -1,3 +1,4 @@
+import os
 import queue
 import threading
 import time
@@ -11,7 +12,7 @@ class TJRRSyncApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("520x550")
+        self.root.geometry("520x640")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
@@ -20,6 +21,7 @@ class TJRRSyncApp:
         self.state_mgr = StateManager()
         self.worker = WorkerController(self.index_mgr, self.state_mgr, self.gui_queue)
         self.initializing = True
+        self.indexing_in_progress = False
         
         self.last_bytes = 0
         self.last_processed_dates = 0
@@ -30,7 +32,7 @@ class TJRRSyncApp:
         self.root.after(100, self.prepare_initial_queue)
         self.process_queue()
         self.update_speed_label()
-
+ 
     def setup_ui(self):
         style = ttk.Style()
         style.theme_use('clam')
@@ -55,7 +57,7 @@ class TJRRSyncApp:
         self.lbl_pct.pack(anchor=tk.E, pady=(0, 15))
         
         info_frame = ttk.LabelFrame(main_frame, text="Estatísticas", padding=10)
-        info_frame.pack(fill=tk.X, pady=(0, 15))
+        info_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.lbl_localizados = ttk.Label(info_frame, text="PDFs Totais localizados: 0")
         self.lbl_localizados.pack(anchor=tk.W, pady=2)
@@ -75,8 +77,20 @@ class TJRRSyncApp:
         self.lbl_velocidade_real = ttk.Label(info_frame, text="Velocidade de download: 0 KB/s", font=("Segoe UI", 9, "italic"))
         self.lbl_velocidade_real.pack(anchor=tk.W, pady=2)
         
+        indexer_frame = ttk.LabelFrame(main_frame, text="Busca Textual (Conteúdo)", padding=10)
+        indexer_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.lbl_indexados = ttk.Label(indexer_frame, text="PDFs Indexados para busca: 0")
+        self.lbl_indexados.pack(anchor=tk.W, pady=2)
+        
+        self.lbl_paginas_indexadas = ttk.Label(indexer_frame, text="Total de documentos indexados: 0")
+        self.lbl_paginas_indexadas.pack(anchor=tk.W, pady=2)
+        
+        self.lbl_status_indexador = ttk.Label(indexer_frame, text="Status do buscador: Aguardando...", font=("Segoe UI", 9, "italic"))
+        self.lbl_status_indexador.pack(anchor=tk.W, pady=2)
+        
         speed_frame = ttk.Frame(main_frame)
-        speed_frame.pack(fill=tk.X, pady=(0, 15))
+        speed_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(speed_frame, text="Modo:").pack(side=tk.LEFT, padx=(0, 10))
         self.cb_speed = ttk.Combobox(speed_frame, values=["1 - Lento (1MB/s)", "2 - Rápido (5MB/s)", "3 - Turbo (Ilimitado)"], state="readonly")
         self.cb_speed.current(1)
@@ -148,9 +162,8 @@ class TJRRSyncApp:
 
     def finish_initial_queue(self):
         self.initializing = False
-        self.btn_action.config(text="ATUALIZAR Base de PDFs", state="normal")
         self.cb_speed.config(state="readonly")
-        self.lbl_pdf_atual.config(text="PDF atual: Aguardando...")
+        
         self.update_labels(
             pdf="",
             baixados=self.state_mgr.data.get("baixados", 0),
@@ -161,9 +174,16 @@ class TJRRSyncApp:
         )
         
         if self.state_mgr.data.get("atualizaveis", 0) == 0 and self.state_mgr.data.get("localizados", 0) > 0:
-            self.btn_action.config(text="Concluído", state="disabled")
+            self.btn_action.config(text="Rechecar Base", state="normal")
+            self.lbl_pdf_atual.config(text=self.get_finished_text())
             self.progress_var.set(100.0)
             self.lbl_pct.config(text="100.00%")
+        else:
+            self.btn_action.config(text="ATUALIZAR Base de PDFs", state="normal")
+            self.lbl_pdf_atual.config(text="PDF atual: Aguardando...")
+            
+        self.worker.start_background_indexing()
+        self.indexing_in_progress = True
 
     def fail_initial_queue(self, error):
         self.initializing = False
@@ -180,10 +200,16 @@ class TJRRSyncApp:
             return
         txt = self.btn_action.cget("text")
         speed_cfg = self.get_speed_config()
-        if txt == "ATUALIZAR Base de PDFs":
+        if txt in ("ATUALIZAR Base de PDFs", "Rechecar Base"):
             self.btn_action.config(text="Pausar")
             self.cb_speed.config(state="disabled")
-            self.worker.start(speed_cfg)
+            
+            if txt == "Rechecar Base":
+                self.btn_action.config(text="Preparando...", state="disabled")
+                self.lbl_pdf_atual.config(text="PDF atual: Rechecando base...")
+                threading.Thread(target=self._rebuild_and_start, args=(speed_cfg,), daemon=True).start()
+            else:
+                self.worker.start(speed_cfg)
         elif txt == "Pausar":
             self.btn_action.config(text="Retomar")
             self.cb_speed.config(state="readonly")
@@ -192,6 +218,21 @@ class TJRRSyncApp:
             self.btn_action.config(text="Pausar")
             self.cb_speed.config(state="disabled")
             self.worker.resume(speed_cfg)
+
+    def _rebuild_and_start(self, speed_cfg):
+        try:
+            self.worker.build_queue()
+        except Exception as error:
+            logger.exception("Não foi possível rechecar a base.")
+            self.gui_queue.put({"type": "initial_error", "error": str(error)})
+            return
+        self.gui_queue.put({"type": "recheck_ready", "speed_cfg": speed_cfg})
+
+    def get_finished_text(self):
+        last_date = self.index_mgr.data.get("ultima_data_indexada", "")
+        if last_date and len(last_date) == 8:
+            return f"Base de Dados atualizada ({last_date[6:8]}/{last_date[4:6]}/{last_date[0:4]})"
+        return "Base de Dados atualizada"
 
     def update_labels(self, pdf, baixados, localizados, atualizaveis, em_progresso, restantes):
         if pdf:
@@ -256,16 +297,37 @@ class TJRRSyncApp:
                     self.lbl_erro.config(text=msg_err)
                 elif msg["type"] == "done":
                     self.worker.finish()
-                    self.btn_action.config(text="Concluído", state="disabled")
-                    self.lbl_pdf_atual.config(text="Sincronização concluída!")
+                    self.btn_action.config(text="Rechecar Base", state="normal")
+                    self.cb_speed.config(state="readonly")
+                    self.lbl_pdf_atual.config(text=self.get_finished_text())
                     self.progress_var.set(100.0)
                     self.lbl_pct.config(text="100.00%")
+                elif msg["type"] == "recheck_ready":
+                    atualizaveis = self.state_mgr.data.get("atualizaveis", 0)
+                    self.update_labels(
+                        pdf="",
+                        baixados=self.state_mgr.data.get("baixados", 0),
+                        localizados=self.state_mgr.data.get("localizados", 0),
+                        atualizaveis=atualizaveis,
+                        em_progresso=0,
+                        restantes=len(self.state_mgr.data.get("fila_restante", []))
+                    )
+                    if atualizaveis > 0:
+                        self.btn_action.config(text="Pausar", state="normal")
+                        self.worker.start(msg["speed_cfg"])
+                    else:
+                        self.btn_action.config(text="Rechecar Base", state="normal")
+                        self.cb_speed.config(state="readonly")
+                        self.lbl_pdf_atual.config(text=self.get_finished_text())
+                        self.progress_var.set(100.0)
+                        self.lbl_pct.config(text="100.00%")
                 elif msg["type"] == "done_with_errors":
                     self.worker.finish(clear_state=False)
-                    self.btn_action.config(text="Concluído com falhas", state="disabled")
-                    self.lbl_pdf_atual.config(text="Sincronização concluída com falhas.")
+                    self.btn_action.config(text="Rechecar Base", state="normal")
+                    self.cb_speed.config(state="readonly")
+                    self.lbl_pdf_atual.config(text="PDF atual: Concluído com falhas.")
                     self.lbl_erro.config(
-                        text="Algumas datas falharam. Elas serão tentadas novamente na próxima execução."
+                        text="Algumas datas falharam. Clique em 'Rechecar Base' para tentar novamente."
                     )
                 elif msg["type"] == "initial_progress":
                     self.update_initial_progress(msg)
@@ -273,6 +335,40 @@ class TJRRSyncApp:
                     self.finish_initial_queue()
                 elif msg["type"] == "initial_error":
                     self.fail_initial_queue(msg["error"])
+                elif msg["type"] == "index_progress":
+                    current = msg["current"]
+                    total = msg["total"]
+                    last_date = msg["last_date"]
+                    stats = msg["stats"]
+                    eta_str = self.format_time(msg["eta"])
+                    speed = msg["speed"]
+                    self.lbl_indexados.config(
+                        text=f"PDFs Indexados para busca: {stats['total_indexados']}/{stats['total_baixados']}"
+                    )
+                    self.lbl_paginas_indexadas.config(
+                        text=f"Total de documentos indexados: {stats['total_paginas']}"
+                    )
+                    if total > 0:
+                        if current == 0:
+                            self.lbl_status_indexador.config(
+                                text="Status: Iniciando indexação em segundo plano dos PDFs pendentes..."
+                            )
+                        else:
+                            self.lbl_status_indexador.config(
+                                text=f"Status: Indexando {current}/{total} ({speed:.1f} PDF/s) | ETA: {eta_str}"
+                            )
+                    else:
+                        self.lbl_status_indexador.config(text="Status: Nenhum PDF pendente de indexação.")
+                elif msg["type"] == "index_done":
+                    stats = msg["stats"]
+                    self.indexing_in_progress = False
+                    self.lbl_indexados.config(
+                        text=f"PDFs Indexados para busca: {stats['total_indexados']}/{stats['total_baixados']}"
+                    )
+                    self.lbl_paginas_indexadas.config(
+                        text=f"Total de documentos indexados: {stats['total_paginas']}"
+                    )
+                    self.lbl_status_indexador.config(text="Status: Indexação em segundo plano concluída.")
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)
@@ -296,8 +392,18 @@ class TJRRSyncApp:
             else:
                 txt = f"{speed/(1024*1024):.2f} MB/s"
             
+            restantes = len(self.worker.fila) + len(self.worker.active_futures)
+            if restantes > 0 and dates_per_second > 0:
+                eta_sec = restantes / dates_per_second
+                eta_str = self.format_time(eta_sec)
+                eta_txt = f" | ETA: {eta_str}"
+            elif restantes > 0:
+                eta_txt = " | ETA: calculando..."
+            else:
+                eta_txt = ""
+
             self.lbl_velocidade_real.config(
-                text=f"Download: {txt} | Consultas: {dates_per_second:.1f} datas/s"
+                text=f"Download: {txt} | Consultas: {dates_per_second:.1f} datas/s{eta_txt}"
             )
             
         self.last_bytes = current_bytes
@@ -305,7 +411,37 @@ class TJRRSyncApp:
         self.last_time = current_time
         self.root.after(1000, self.update_speed_label)
 
+    def format_time(self, seconds):
+        if seconds is None or seconds <= 0:
+            return "calculando..."
+        s = int(seconds)
+        h = s // 3600
+        m = (s % 3600) // 60
+        sec = s % 60
+        if h > 0:
+            return f"{h:02d}h {m:02d}m {sec:02d}s"
+        return f"{m:02d}m {sec:02d}s"
+
     def on_close(self):
+        if self.indexing_in_progress:
+            resposta = messagebox.askyesno(
+                "Indexação em andamento",
+                "A indexação de PDFs para busca textual ainda está em andamento.\n\n"
+                "Se fechar agora, o processo será interrompido e retomado "
+                "na próxima vez que o aplicativo for aberto.\n\n"
+                "Deseja fechar mesmo assim?",
+                icon="warning"
+            )
+            if not resposta:
+                return  # Usuário escolheu não fechar
+
+        # Para o download e sinaliza o indexador para interromper
         if self.worker.running:
             self.worker.stop()
+        self.worker.stop_indexing()
+
+        # Destrói a janela e encerra o processo por completo.
+        # os._exit(0) é necessário porque ThreadPoolExecutor cria threads
+        # não-daemon que manteriam o processo Python vivo após root.destroy().
         self.root.destroy()
+        os._exit(0)
