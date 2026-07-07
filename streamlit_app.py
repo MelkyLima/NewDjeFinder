@@ -59,25 +59,32 @@ def result_rows(results):
     ]
 
 
-def render_filters():
+def render_main_filters():
+    st.header("Busca")
+    query = st.text_input("Termo principal", placeholder="Ex.: melquizedeque lima pereira")
+    related_query = st.text_input("Perto de", placeholder="Ex.: elogiar")
+
+    cols = st.columns([3, 2])
+    with cols[0]:
+        match_label = st.selectbox("Modo", list(MATCH_OPTIONS.keys()), index=0)
+    with cols[1]:
+        distance_label = st.select_slider(
+            "Distancia do contexto",
+            options=list(DISTANCE_OPTIONS.keys()),
+            value="50 palavras",
+            help="Usada quando o campo 'Perto de' esta preenchido ou o modo e Contexto proximo.",
+        )
+
+    return query, related_query, match_label, distance_label
+
+
+def render_sidebar_filters():
     st.sidebar.header("Filtros")
-    query = st.sidebar.text_input("Termo principal", placeholder="Ex.: melquizedeque lima pereira")
-    related_query = st.sidebar.text_input("Perto de", placeholder="Ex.: elogiar")
-
-    match_label = st.sidebar.selectbox("Modo", list(MATCH_OPTIONS.keys()), index=0)
-    distance_label = st.sidebar.select_slider(
-        "Distancia do contexto",
-        options=list(DISTANCE_OPTIONS.keys()),
-        value="50 palavras",
-        help="Usada quando o campo 'Perto de' esta preenchido ou o modo e Contexto proximo.",
-    )
-
-    st.sidebar.divider()
     year_filter = st.sidebar.text_input("Ano", placeholder="Todos")
     month_filter = st.sidebar.text_input("Mes", placeholder="Todos")
     sort_label = st.sidebar.selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=0)
 
-    return query, related_query, year_filter, month_filter, match_label, sort_label, distance_label
+    return year_filter, month_filter, sort_label
 
 
 def render_download_picker(results):
@@ -107,7 +114,7 @@ def render_search(engine, filters):
     if "last_search_key" not in st.session_state:
         st.session_state.last_search_key = None
 
-    query, related_query, year_filter, month_filter, match_label, sort_label, distance_label = filters
+    query, related_query, match_label, distance_label, year_filter, month_filter, sort_label = filters
 
     search_key = (
         query.strip(),
@@ -123,7 +130,7 @@ def render_search(engine, filters):
         st.session_state.last_search_key = search_key
 
     if not query.strip():
-        st.info("Digite um termo principal na barra lateral para iniciar a busca.")
+        st.info("Digite um termo principal na tela principal para iniciar a busca.")
         return
 
     year = year_filter.strip() if year_filter.strip().isdigit() else None
@@ -203,8 +210,11 @@ def main():
     st.caption("Busca textual nos PDFs indexados localmente.")
     configure_data_dir(Config.BASE_DIR)
 
+    filters_main = render_main_filters()
     with st.sidebar:
-        filters = render_filters()
+        filters_sidebar = render_sidebar_filters()
+
+    filters = (*filters_main, *filters_sidebar)
 
     if not db_exists():
         st.error("Banco SQLite nao encontrado.")
