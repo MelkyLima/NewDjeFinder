@@ -178,7 +178,7 @@ Na barra lateral, confirme o diretorio que contem `dje_finder.db` e as pastas an
 - ordenar por relevancia, mais recentes ou mais antigos;
 - baixar o PDF encontrado quando o arquivo existe localmente.
 
-Para publicar no Streamlit Community Cloud, sera necessario disponibilizar tambem a base SQLite e os PDFs no ambiente publicado ou conectar a pagina a um armazenamento externo. O app na nuvem nao consegue acessar automaticamente os arquivos do computador local.
+Para acessar em outro computador da mesma rede, mantenha o servidor rodando e abra o endereco de rede exibido pelo Streamlit, por exemplo `http://192.168.100.9:8501`.
 
 ## Arquitetura
 

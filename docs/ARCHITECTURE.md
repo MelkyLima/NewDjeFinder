@@ -63,7 +63,7 @@ No modo de contexto proximo, o FTS5 primeiro reduz os candidatos exigindo os doi
 
 `streamlit_app.py` oferece uma interface Web local para consulta, usando o mesmo `PDFSearchEngine`. Ela nao executa sincronizacao nem indexacao; essas tarefas continuam no app desktop. A pagina espera encontrar `dje_finder.db` e os PDFs no diretorio de dados configurado.
 
-No Streamlit Community Cloud, a base precisa estar presente no ambiente publicado ou vir de armazenamento externo. O caminho local `~/Documents/PDF-Dje` e util no computador do usuario, mas nao existe automaticamente na nuvem.
+Quando executada em rede local, outros computadores acessam a pagina servida pela maquina que esta rodando o Streamlit. Os dados continuam sendo lidos no computador servidor.
 
 ## Concorrencia
 
@@ -86,4 +86,4 @@ As mensagens dos workers chegam a interface por uma `queue.Queue`, evitando atua
 3. Exibir historico detalhado de falhas com nova tentativa imediata.
 4. Adicionar logs rotativos em arquivo para facilitar suporte.
 5. Avaliar OCR opcional para PDFs sem camada de texto.
-6. Conectar a interface Web a armazenamento externo para publicacao em nuvem.
+6. Melhorar controles de acesso para uso em rede local quando necessario.

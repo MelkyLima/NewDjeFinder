@@ -56,12 +56,12 @@ A busca textual ja esta implementada na GUI com um modulo reutilizavel:
 
 ## Proximo passo recomendado
 
-A proxima evolucao mais natural e preparar a publicacao Web:
+A proxima evolucao mais natural e refinar o uso local em rede:
 
-- decidir onde a base SQLite e os PDFs ficarao hospedados;
 - adicionar exportacao CSV dos resultados;
 - destacar melhor os termos encontrados;
-- avaliar autenticacao ou acesso privado se a base contiver dados sensiveis.
+- avaliar autenticacao ou acesso privado se a base for consultada por outros computadores;
+- criar instrucoes simples para liberar a porta no firewall do Windows.
 
 Essa entrega aproveita a infraestrutura que ja existe e transforma a indexacao em valor visivel para o usuario.
 

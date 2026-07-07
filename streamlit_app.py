@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from dje_finder.config import Config
@@ -15,14 +16,14 @@ from dje_finder.search import (
 
 
 SORT_OPTIONS = {
-    "Relevância": SORT_RELEVANCE,
+    "Relevancia": SORT_RELEVANCE,
     "Mais recentes": SORT_NEWEST,
     "Mais antigos": SORT_OLDEST,
 }
 MATCH_OPTIONS = {
     "Todos os termos": MATCH_ALL_TERMS,
     "Frase exata": MATCH_EXACT_PHRASE,
-    "Contexto próximo": MATCH_NEAR_CONTEXT,
+    "Contexto proximo": MATCH_NEAR_CONTEXT,
 }
 DISTANCE_OPTIONS = {
     "25 palavras": 25,
@@ -45,47 +46,68 @@ def db_exists():
     return Config.DB_FILE.exists()
 
 
-def result_card(result):
-    with st.container(border=True):
-        st.caption(f"{result.display_date} • {result.year}/{result.month}")
-        st.markdown(result.snippet.replace("[", "**").replace("]", "**"))
-        st.code(str(result.pdf_path), language=None)
-
-        cols = st.columns([1, 5])
-        if result.pdf_path.is_file():
-            with result.pdf_path.open("rb") as pdf_file:
-                cols[0].download_button(
-                    "Baixar PDF",
-                    data=pdf_file,
-                    file_name=result.pdf_path.name,
-                    mime="application/pdf",
-                    key=f"download-{result.date_str}-{result.pdf_path.name}",
-                )
-        else:
-            cols[0].button("PDF ausente", disabled=True, key=f"missing-{result.date_str}")
+def result_rows(results):
+    return [
+        {
+            "Data": result.display_date,
+            "Ano/Mes": f"{result.year}/{result.month}",
+            "Trecho": result.snippet.replace("[", "").replace("]", ""),
+            "Arquivo": result.pdf_path.name,
+            "Caminho": str(result.pdf_path),
+        }
+        for result in results
+    ]
 
 
-def render_search(engine):
+def render_filters():
+    st.sidebar.header("Filtros")
+    query = st.sidebar.text_input("Termo principal", placeholder="Ex.: melquizedeque lima pereira")
+    related_query = st.sidebar.text_input("Perto de", placeholder="Ex.: elogiar")
+
+    match_label = st.sidebar.selectbox("Modo", list(MATCH_OPTIONS.keys()), index=0)
+    distance_label = st.sidebar.select_slider(
+        "Distancia do contexto",
+        options=list(DISTANCE_OPTIONS.keys()),
+        value="50 palavras",
+        help="Usada quando o campo 'Perto de' esta preenchido ou o modo e Contexto proximo.",
+    )
+
+    st.sidebar.divider()
+    year_filter = st.sidebar.text_input("Ano", placeholder="Todos")
+    month_filter = st.sidebar.text_input("Mes", placeholder="Todos")
+    sort_label = st.sidebar.selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=0)
+
+    return query, related_query, year_filter, month_filter, match_label, sort_label, distance_label
+
+
+def render_download_picker(results):
+    options = {
+        f"{result.display_date} - {result.pdf_path.name}": result
+        for result in results
+        if result.pdf_path.is_file()
+    }
+    if not options:
+        return
+
+    with st.expander("Baixar PDF"):
+        selected = st.selectbox("Resultado", list(options.keys()))
+        result = options[selected]
+        with result.pdf_path.open("rb") as pdf_file:
+            st.download_button(
+                "Baixar PDF selecionado",
+                data=pdf_file,
+                file_name=result.pdf_path.name,
+                mime="application/pdf",
+            )
+
+
+def render_search(engine, filters):
     if "offset" not in st.session_state:
         st.session_state.offset = 0
     if "last_search_key" not in st.session_state:
         st.session_state.last_search_key = None
 
-    query = st.text_input("Termo principal", placeholder="Ex.: melquizedeque lima pereira")
-    related_query = st.text_input("Perto de", placeholder="Ex.: elogiar")
-
-    cols = st.columns([1, 1, 1, 1])
-    year_filter = cols[0].text_input("Ano", placeholder="Todos")
-    month_filter = cols[1].text_input("Mês", placeholder="Todos")
-    match_label = cols[2].selectbox("Modo", list(MATCH_OPTIONS.keys()), index=0)
-    sort_label = cols[3].selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=0)
-
-    distance_label = st.select_slider(
-        "Distância do contexto",
-        options=list(DISTANCE_OPTIONS.keys()),
-        value="50 palavras",
-        help="Usada quando o campo 'Perto de' está preenchido ou o modo é Contexto próximo.",
-    )
+    query, related_query, year_filter, month_filter, match_label, sort_label, distance_label = filters
 
     search_key = (
         query.strip(),
@@ -101,7 +123,7 @@ def render_search(engine):
         st.session_state.last_search_key = search_key
 
     if not query.strip():
-        st.info("Digite um termo principal para iniciar a busca.")
+        st.info("Digite um termo principal na barra lateral para iniciar a busca.")
         return
 
     year = year_filter.strip() if year_filter.strip().isdigit() else None
@@ -122,26 +144,26 @@ def render_search(engine):
         context_distance=DISTANCE_OPTIONS[distance_label],
     )
 
-    total_label = f"{response.total} resultado(s)"
     if response.total:
         current_end = response.offset + len(response.results)
-        total_label = f"Exibindo {response.offset + 1}-{current_end} de {response.total} resultado(s)"
-    st.subheader(total_label)
+        st.subheader(f"Exibindo {response.offset + 1}-{current_end} de {response.total} resultado(s)")
+    else:
+        st.subheader("0 resultado(s)")
 
     if response.has_pending_indexing:
         pending = response.total_pdfs - response.indexed_pdfs
         st.warning(
-            f"Ainda existem {pending} PDF(s) pendente(s) de indexação. "
-            "A busca pode não cobrir toda a base."
+            f"Ainda existem {pending} PDF(s) pendente(s) de indexacao. "
+            "A busca pode nao cobrir toda a base."
         )
 
     metric_cols = st.columns(3)
     metric_cols[0].metric("PDFs baixados", response.total_pdfs)
     metric_cols[1].metric("PDFs indexados", response.indexed_pdfs)
-    metric_cols[2].metric("Falhas de indexação", response.failed_pdfs)
+    metric_cols[2].metric("Falhas de indexacao", response.failed_pdfs)
 
     if response.year_counts:
-        with st.expander("Contagem por ano/mês"):
+        with st.expander("Contagem por ano/mes"):
             st.write("Anos:", response.year_counts)
             st.write("Meses:", response.month_counts)
 
@@ -149,14 +171,28 @@ def render_search(engine):
         st.info("Nenhum resultado encontrado para os filtros atuais.")
         return
 
-    for result in response.results:
-        result_card(result)
+    table = pd.DataFrame(result_rows(response.results))
+    st.dataframe(
+        table,
+        hide_index=True,
+        use_container_width=True,
+        height=min(620, 38 + (len(response.results) + 1) * 35),
+        column_config={
+            "Data": st.column_config.TextColumn("Data", width="small"),
+            "Ano/Mes": st.column_config.TextColumn("Ano/Mes", width="small"),
+            "Trecho": st.column_config.TextColumn("Trecho", width="large"),
+            "Arquivo": st.column_config.TextColumn("Arquivo", width="medium"),
+            "Caminho": st.column_config.TextColumn("Caminho", width="large"),
+        },
+    )
+
+    render_download_picker(response.results)
 
     nav_cols = st.columns([1, 1, 6])
     if nav_cols[0].button("Anterior", disabled=response.offset == 0):
         st.session_state.offset = max(0, response.offset - PAGE_SIZE)
         st.rerun()
-    if nav_cols[1].button("Próxima", disabled=not response.has_more):
+    if nav_cols[1].button("Proxima", disabled=not response.has_more):
         st.session_state.offset = response.offset + len(response.results)
         st.rerun()
 
@@ -165,32 +201,19 @@ def main():
     st.set_page_config(page_title="DJE Finder TJRR", layout="wide")
     st.title("DJE Finder TJRR")
     st.caption("Busca textual nos PDFs indexados localmente.")
+    configure_data_dir(Config.BASE_DIR)
 
     with st.sidebar:
-        st.header("Base local")
-        data_dir = st.text_input("Diretório de dados", value=str(Config.BASE_DIR))
-        configure_data_dir(data_dir)
-        st.code(str(Config.DB_FILE), language=None)
-
-        if db_exists():
-            st.success("Banco SQLite encontrado.")
-        else:
-            st.error("Banco SQLite não encontrado.")
-            st.info(
-                "Execute a sincronização/indexação pelo app desktop ou aponte para "
-                "um diretório que contenha `dje_finder.db`."
-            )
-
-        st.divider()
-        st.markdown(
-            "No Streamlit Community Cloud, os dados precisam estar disponíveis no "
-            "ambiente publicado ou em um armazenamento externo configurado."
-        )
+        filters = render_filters()
 
     if not db_exists():
+        st.error("Banco SQLite nao encontrado.")
+        st.info(
+            "Execute a sincronizacao/indexacao pelo app desktop antes de usar a interface Web."
+        )
         return
 
-    render_search(PDFSearchEngine(page_size=PAGE_SIZE))
+    render_search(PDFSearchEngine(page_size=PAGE_SIZE), filters)
 
 
 if __name__ == "__main__":
