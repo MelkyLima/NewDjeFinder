@@ -15,3 +15,5 @@ dist/
 *.pdf.part
 indice.json
 estado.json
+dje_finder.db
+dje_finder.db-*

@@ -12,6 +12,14 @@ from dje_finder.persistence import IndexManager, StateManager, init_db, get_db_c
 from dje_finder.network import DownloadManager, PDFDiscovery
 from dje_finder.worker import WorkerController
 from dje_finder.indexer import PDFIndexer
+from dje_finder.search import (
+    MATCH_EXACT_PHRASE,
+    MATCH_NEAR_CONTEXT,
+    PDFSearchEngine,
+    clean_snippet,
+    normalize_fts_phrase_query,
+    normalize_fts_query,
+)
 
 class FakeResponse:
     def __init__(self, chunks):
@@ -626,6 +634,122 @@ class IndexerTests(unittest.TestCase):
         cursor.execute("SELECT COUNT(*) FROM pdf_pages_fts")
         self.assertEqual(cursor.fetchone()[0], 10)
         conn.close()
+
+
+class SearchTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.temporary_directory.name)
+        self.config_patchers = [
+            patch.object(Config, "BASE_DIR", self.base_dir),
+            patch.object(Config, "INDEX_FILE", self.base_dir / "indice.json"),
+            patch.object(Config, "STATE_FILE", self.base_dir / "estado.json"),
+            patch.object(Config, "DB_FILE", self.base_dir / "dje_finder.db"),
+        ]
+        for patcher in self.config_patchers:
+            patcher.start()
+        init_db()
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        rows = [
+            ("20240115", "Decisao judicial sobre Boa Vista e comarca estadual."),
+            ("20240220", "Despacho ordinario sem o termo principal."),
+            ("20250110", "Nova decisao publicada na comarca de Pacaraima."),
+            ("20250305", "Decisao recente com prioridade de julgamento."),
+            ("20250408", "Pereira compareceu antes de outros nomes; Lima aparece depois."),
+            ("20250409", "Lima Pereira assinou o pedido."),
+            ("20260111", "Resolve elogiar servidores como reconhecimento. Melquizedeque Lima Pereira recebeu a mencao."),
+            ("20260112", "Resolve elogiar servidores nesta portaria. " + ("texto distante " * 80) + "Melquizedeque Lima Pereira recebeu a mencao."),
+        ]
+        cursor.executemany("INSERT INTO pdfs (date_str) VALUES (?)", [(date,) for date, _ in rows])
+        cursor.executemany(
+            "INSERT INTO pdf_pages_fts (date_str, content) VALUES (?, ?)",
+            rows,
+        )
+        cursor.executemany(
+            "INSERT INTO indexed_pdfs (date_str, indexed_at, status, error_message) VALUES (?, ?, ?, ?)",
+            [(date, "2026-01-01T00:00:00", "SUCCESS", None) for date, _ in rows[:3]],
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        for patcher in reversed(self.config_patchers):
+            patcher.stop()
+        self.temporary_directory.cleanup()
+
+    def test_normalize_fts_query_keeps_user_terms_safe(self):
+        self.assertEqual(normalize_fts_query('decisao: "boa vista"'), '"decisao" "boa" "vista"')
+        self.assertEqual(normalize_fts_phrase_query('Lima, Pereira!'), '"Lima Pereira"')
+
+    def test_clean_snippet_compacts_to_one_line(self):
+        snippet = clean_snippet("Antes\n\n[termo]\t encontrado   depois", max_length=25)
+
+        self.assertEqual(snippet, "Antes [termo] encontra...")
+
+    def test_search_returns_paginated_results_and_counts(self):
+        engine = PDFSearchEngine(page_size=2)
+        response = engine.search("decisao", offset=0)
+
+        self.assertEqual(response.total, 3)
+        self.assertEqual(len(response.results), 2)
+        self.assertTrue(response.has_more)
+        self.assertEqual(response.year_counts["2025"], 2)
+        self.assertEqual(response.year_counts["2024"], 1)
+        self.assertTrue(response.has_pending_indexing)
+        self.assertIn("dpj-", response.results[0].pdf_path.name)
+
+    def test_search_filters_by_year_and_month(self):
+        engine = PDFSearchEngine()
+        response = engine.search("decisao", year="2025", month="03")
+
+        self.assertEqual(response.total, 1)
+        self.assertEqual(response.results[0].date_str, "20250305")
+        self.assertEqual(response.month_counts, {"01": 1, "03": 1})
+
+    def test_search_orders_by_oldest(self):
+        engine = PDFSearchEngine()
+        response = engine.search("decisao", sort="oldest")
+
+        self.assertEqual(response.results[0].date_str, "20240115")
+
+    def test_search_exact_phrase_requires_adjacent_terms(self):
+        engine = PDFSearchEngine()
+
+        all_terms = engine.search("lima pereira")
+        exact_phrase = engine.search("lima pereira", match_mode=MATCH_EXACT_PHRASE)
+
+        self.assertEqual(all_terms.total, 4)
+        self.assertEqual(exact_phrase.total, 3)
+        self.assertEqual(exact_phrase.results[0].date_str, "20250409")
+
+    def test_search_near_context_requires_terms_within_distance(self):
+        engine = PDFSearchEngine()
+
+        near = engine.search(
+            "melquizedeque lima pereira",
+            match_mode=MATCH_NEAR_CONTEXT,
+            related_query="elogiar",
+            context_distance=20,
+        )
+        broader = engine.search(
+            "melquizedeque lima pereira",
+            match_mode=MATCH_NEAR_CONTEXT,
+            related_query="elogiar",
+            context_distance=220,
+        )
+
+        self.assertEqual(near.total, 1)
+        self.assertEqual(near.results[0].date_str, "20260111")
+        self.assertEqual(broader.total, 2)
+
+    def test_empty_search_does_not_query_fts(self):
+        engine = PDFSearchEngine()
+        response = engine.search("   ")
+
+        self.assertEqual(response.total, 0)
+        self.assertEqual(response.results, [])
 
 
 if __name__ == "__main__":

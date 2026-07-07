@@ -1,62 +1,80 @@
-# Análise técnica
+# Analise tecnica
 
 ## Resumo
 
-O DJE Finder TJRR é um sincronizador desktop especializado. Ele explora um padrão previsível de URL do portal do TJRR, testa uma data por vez e mantém localmente os PDFs encontrados. O projeto é útil para formar uma coleção histórica sem exigir que o usuário faça downloads manuais.
+O DJE Finder TJRR e um sincronizador desktop especializado. Ele explora um padrao previsivel de URL do portal do TJRR, testa uma data por vez, mantem localmente os PDFs encontrados e ja prepara uma base SQLite para pesquisa textual.
 
-O desenho atual é adequado para uma aplicação pessoal ou de pequeno porte: Tkinter mantém a distribuição simples, `requests` resolve a comunicação HTTP e threads permitem que a interface continue responsiva.
+O desenho atual e adequado para uma aplicacao pessoal ou de pequeno porte: Tkinter mantem a distribuicao simples, `requests` resolve a comunicacao HTTP, SQLite evita infraestrutura externa e threads/processos mantem a interface responsiva durante downloads e indexacao.
 
 ## Pontos fortes
 
 - objetivo claro e fluxo de uso direto;
-- ausência de banco de dados ou infraestrutura externa;
-- organização dos documentos por ano;
-- retomada após interrupções;
+- armazenamento local em SQLite, sem servico externo;
+- organizacao dos documentos por ano;
+- retomada apos interrupcoes;
 - controle agregado de velocidade;
-- concorrência apropriada para operações de rede;
-- formato de dados legível e fácil de recuperar.
+- concorrencia apropriada para operacoes de rede;
+- migracao automatica de JSON legado;
+- testes cobrindo persistencia, retomada, falhas de rede e indexacao textual;
+- busca textual na GUI usando a base FTS5.
 
-## Riscos encontrados e tratamento aplicado
+## Riscos encontrados e tratamento atual
 
-| Área | Situação anterior | Tratamento atual |
+| Area | Situacao | Tratamento atual |
 | --- | --- | --- |
-| HTTPS | certificado não era verificado e alertas eram ocultados | verificação padrão do `requests` restaurada |
-| Downloads incompletos | o arquivo final era escrito diretamente | uso de `.part`, validação `%PDF` e substituição atômica |
-| Interrupção | tarefas já submetidas podiam desaparecer da retomada | `em_andamento` agora é persistido |
-| Falhas de rede | uma data com erro podia deixar de ser tentada | falhas são salvas e recuperadas na próxima execução |
-| Backups manuais | PDFs copiados sem `indice.json` não eram reconhecidos na montagem da fila | a pasta é varrida, arquivos válidos entram no índice, lacunas grandes voltam para a fila e o PDF mais recente vira o marco inicial |
-| Pausa | o seletor de velocidade continuava bloqueado após pausar | o modo pode ser alterado durante a pausa e aplicado ao retomar |
-| JSON corrompido | uma interrupção durante a escrita podia truncar metadados | gravação temporária e substituição atômica |
-| Diagnóstico | erros de leitura eram ignorados | avisos são registrados com `logging` |
-| Distribuição | não havia instruções ou processo de build | README, dependências, PyInstaller e GitHub Actions adicionados |
+| HTTPS | Falhas temporarias do portal nao devem virar ausencia definitiva | Erros de rede sao salvos em `falhas`; apenas 404 vira `datas_sem_pdf` |
+| Downloads incompletos | Arquivo final nao deve ser substituido por resposta invalida | Uso de `.part`, validacao `%PDF` e substituicao final |
+| Interrupcao | Tarefas submetidas precisam voltar na proxima execucao | `em_andamento` e `fila_restante` sao persistidos no SQLite |
+| Backups manuais | PDFs copiados sem metadados precisam ser reconhecidos | Varredura local valida PDFs e reconstrui o catalogo |
+| Lacunas de acervo | Backup incompleto nao deve parecer completo | Intervalos grandes entre PDFs locais voltam para a fila |
+| Busca textual | Extracao pode ser lenta em acervos grandes | Processo produtor-consumidor com escrita SQLite em lote |
+| Dados legados | Usuarios podem ter `indice.json` e `estado.json` antigos | Migracao automatica para `dje_finder.db` |
+| Distribuicao | Dependencias e build precisam acompanhar o codigo | `requirements.txt`, CI e spec do PyInstaller declaram a indexacao |
 
-## Prioridades recomendadas
+## Prioridades antes de novas funcionalidades
 
-### Alta
+1. Manter `requirements.txt`, CI e PyInstaller alinhados com imports reais.
+2. Preservar testes para persistencia, retomada, validacao de PDFs e indexacao.
+3. Evitar que erros transitorios do portal contaminem `datas_sem_pdf`.
+4. Nao versionar banco local, PDFs baixados, arquivos `.part` ou metadados pessoais.
 
-1. Confirmar periodicamente se o padrão de URL do TJRR continua válido.
-2. Respeitar limites e termos de uso do portal, usando preferencialmente os modos lento ou rápido.
-3. Manter testes para persistência, retomada e validação dos arquivos.
-4. Assinar digitalmente o executável Windows quando o projeto tiver distribuição mais ampla.
+## Estado da busca textual
 
-### Média
+A busca textual ja esta implementada na GUI com um modulo reutilizavel:
 
-1. Dividir `app.py` em módulos para interface, domínio, rede e persistência.
-2. Adicionar uma tela de configuração de período e pasta de destino.
-3. Exibir uma lista das falhas, com botão de nova tentativa.
-4. Criar logs rotativos em arquivo para facilitar suporte.
-5. Adicionar tentativas automáticas com espera progressiva para erros transitórios.
+- campo para termo de busca;
+- consulta FTS5 em `pdf_pages_fts`;
+- listagem de resultados por data;
+- trecho do texto encontrado;
+- acao para abrir o PDF local correspondente;
+- filtros por ano e mes;
+- modo todos os termos e modo frase exata;
+- modo contexto proximo com termo relacionado e distancia em palavras;
+- ordenacao por relevancia, mais recentes e mais antigos;
+- carregamento paginado;
+- aviso quando ainda ha PDFs pendentes de indexacao.
 
-### Evolução do produto
+## Proximo passo recomendado
 
-1. Indexar o texto dos PDFs para pesquisa por nome, processo ou termo.
-2. Adicionar OCR opcional para documentos sem camada de texto.
-3. Permitir exportar resultados e metadados em CSV.
-4. Detectar alterações ou republicações de uma mesma edição por hash.
-5. Disponibilizar também uma interface de linha de comando para automação.
+A proxima evolucao mais natural e preparar a publicacao Web:
 
-## Cuidados jurídicos e de privacidade
+- decidir onde a base SQLite e os PDFs ficarao hospedados;
+- adicionar exportacao CSV dos resultados;
+- destacar melhor os termos encontrados;
+- avaliar autenticacao ou acesso privado se a base contiver dados sensiveis.
 
-Diários judiciais podem conter dados pessoais. O software apenas baixa documentos já expostos pelo portal de origem, mas quem redistribui, indexa ou processa esse conteúdo deve avaliar as regras aplicáveis, a finalidade do tratamento e eventuais obrigações relacionadas à LGPD.
+Essa entrega aproveita a infraestrutura que ja existe e transforma a indexacao em valor visivel para o usuario.
 
-O repositório não deve incluir PDFs baixados, índices pessoais, caminhos locais ou exemplos contendo dados reais de processos.
+## Evolucao posterior
+
+1. OCR opcional para documentos sem camada de texto.
+2. Exportacao de resultados e metadados em CSV.
+3. Deteccao de alteracoes ou republicacoes por hash.
+4. Tela de preferencias para pasta, periodo e concorrencia.
+5. Interface de linha de comando para automacao.
+
+## Cuidados juridicos e de privacidade
+
+Diarios judiciais podem conter dados pessoais. O software apenas baixa documentos ja expostos pelo portal de origem, mas quem redistribui, indexa ou processa esse conteudo deve avaliar as regras aplicaveis, a finalidade do tratamento e eventuais obrigacoes relacionadas a LGPD.
+
+O repositorio nao deve incluir PDFs baixados, indices pessoais, caminhos locais ou exemplos contendo dados reais de processos.

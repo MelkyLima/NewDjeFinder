@@ -1,27 +1,45 @@
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from dje_finder.config import APP_NAME, logger
 from dje_finder.persistence import IndexManager, StateManager
+from dje_finder.search import (
+    MATCH_ALL_TERMS,
+    MATCH_EXACT_PHRASE,
+    MATCH_NEAR_CONTEXT,
+    PDFSearchEngine,
+    SORT_NEWEST,
+    SORT_OLDEST,
+    SORT_RELEVANCE,
+)
 from dje_finder.worker import WorkerController
 
 class TJRRSyncApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("520x640")
-        self.root.resizable(False, False)
+        self.root.geometry("980x760")
+        self.root.minsize(820, 620)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.gui_queue = queue.Queue()
         self.index_mgr = IndexManager()
         self.state_mgr = StateManager()
         self.worker = WorkerController(self.index_mgr, self.state_mgr, self.gui_queue)
+        self.search_engine = PDFSearchEngine()
         self.initializing = True
         self.indexing_in_progress = False
+        self.search_in_progress = False
+        self.search_offset = 0
+        self.search_query = ""
+        self.search_response = None
+        self.search_rows = {}
+        self.search_request_id = 0
         
         self.last_bytes = 0
         self.last_processed_dates = 0
@@ -37,13 +55,18 @@ class TJRRSyncApp:
         style = ttk.Style()
         style.theme_use('clam')
         
-        main_frame = ttk.Frame(self.root, padding=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        main_frame = ttk.Frame(self.notebook, padding=20)
+        search_frame = ttk.Frame(self.notebook, padding=16)
+        self.notebook.add(main_frame, text="Sincronização")
+        self.notebook.add(search_frame, text="Busca textual")
         
         self.btn_action = ttk.Button(main_frame, text="ATUALIZAR Base de PDFs", command=self.toggle_action)
         self.btn_action.pack(side=tk.BOTTOM, fill=tk.X, ipady=8, pady=(10, 0))
         
-        self.lbl_erro = ttk.Label(main_frame, text="", foreground="red", wraplength=480)
+        self.lbl_erro = ttk.Label(main_frame, text="", foreground="red", wraplength=900)
         self.lbl_erro.pack(side=tk.BOTTOM, fill=tk.X)
         
         self.lbl_pdf_atual = ttk.Label(main_frame, text="PDF atual: Aguardando...", font=("Segoe UI", 10, "bold"))
@@ -95,6 +118,323 @@ class TJRRSyncApp:
         self.cb_speed = ttk.Combobox(speed_frame, values=["1 - Lento (1MB/s)", "2 - Rápido (5MB/s)", "3 - Turbo (Ilimitado)"], state="readonly")
         self.cb_speed.current(1)
         self.cb_speed.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.setup_search_ui(search_frame)
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+
+    def setup_search_ui(self, parent):
+        top_frame = ttk.Frame(parent)
+        top_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(top_frame, text="Termo:").pack(side=tk.LEFT, padx=(0, 8))
+        self.search_var = tk.StringVar()
+        self.entry_search = ttk.Entry(top_frame, textvariable=self.search_var, state="normal")
+        self.entry_search.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.entry_search.bind("<Return>", lambda _event: self.start_search(reset=True))
+        self.entry_search.bind("<Button-1>", lambda _event: self.entry_search.focus_set())
+
+        self.btn_search = ttk.Button(top_frame, text="Buscar", command=lambda: self.start_search(reset=True))
+        self.btn_search.pack(side=tk.LEFT)
+
+        related_frame = ttk.Frame(parent)
+        related_frame.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(related_frame, text="Perto de:").pack(side=tk.LEFT, padx=(0, 8))
+        self.search_related_var = tk.StringVar()
+        self.entry_search_related = ttk.Entry(related_frame, textvariable=self.search_related_var, state="normal")
+        self.entry_search_related.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        self.entry_search_related.bind("<Return>", lambda _event: self.start_search(reset=True))
+        ttk.Label(related_frame, text="Distância:").pack(side=tk.LEFT, padx=(0, 6))
+        self.search_distance_var = tk.StringVar(value="50 palavras")
+        self.cb_search_distance = ttk.Combobox(
+            related_frame,
+            textvariable=self.search_distance_var,
+            values=["25 palavras", "50 palavras", "100 palavras", "200 palavras"],
+            width=12,
+            state="readonly",
+        )
+        self.cb_search_distance.pack(side=tk.LEFT)
+        self.cb_search_distance.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
+
+        filters_frame = ttk.Frame(parent)
+        filters_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(filters_frame, text="Ano:").pack(side=tk.LEFT, padx=(0, 6))
+        self.search_year_var = tk.StringVar(value="Todos")
+        self.cb_search_year = ttk.Combobox(filters_frame, textvariable=self.search_year_var, values=["Todos"], width=14, state="readonly")
+        self.cb_search_year.pack(side=tk.LEFT, padx=(0, 12))
+        self.cb_search_year.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
+
+        ttk.Label(filters_frame, text="Mês:").pack(side=tk.LEFT, padx=(0, 6))
+        self.search_month_var = tk.StringVar(value="Todos")
+        self.cb_search_month = ttk.Combobox(filters_frame, textvariable=self.search_month_var, values=["Todos"], width=14, state="readonly")
+        self.cb_search_month.pack(side=tk.LEFT, padx=(0, 12))
+        self.cb_search_month.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
+
+        ttk.Label(filters_frame, text="Modo:").pack(side=tk.LEFT, padx=(0, 6))
+        self.search_match_var = tk.StringVar(value="Todos os termos")
+        self.cb_search_match = ttk.Combobox(
+            filters_frame,
+            textvariable=self.search_match_var,
+            values=["Todos os termos", "Frase exata", "Contexto próximo"],
+            width=16,
+            state="readonly",
+        )
+        self.cb_search_match.pack(side=tk.LEFT, padx=(0, 12))
+        self.cb_search_match.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
+
+        ttk.Label(filters_frame, text="Ordenar:").pack(side=tk.LEFT, padx=(0, 6))
+        self.search_sort_var = tk.StringVar(value="Relevância")
+        self.cb_search_sort = ttk.Combobox(
+            filters_frame,
+            textvariable=self.search_sort_var,
+            values=["Relevância", "Mais recentes", "Mais antigos"],
+            width=16,
+            state="readonly",
+        )
+        self.cb_search_sort.pack(side=tk.LEFT, padx=(0, 12))
+        self.cb_search_sort.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
+
+        self.btn_load_more = ttk.Button(filters_frame, text="Carregar mais", command=lambda: self.start_search(reset=False), state="disabled")
+        self.btn_load_more.pack(side=tk.RIGHT)
+
+        self.lbl_search_summary = ttk.Label(parent, text="Digite um termo para buscar nos PDFs indexados.")
+        self.lbl_search_summary.pack(fill=tk.X, pady=(0, 4))
+
+        self.lbl_search_warning = ttk.Label(parent, text="", foreground="#a15c00", wraplength=920)
+        self.lbl_search_warning.pack(fill=tk.X, pady=(0, 8))
+
+        table_frame = ttk.Frame(parent)
+        table_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("date", "period", "snippet", "path")
+        self.search_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.search_tree.heading("date", text="Data")
+        self.search_tree.heading("period", text="Ano/Mês")
+        self.search_tree.heading("snippet", text="Trecho")
+        self.search_tree.heading("path", text="Arquivo")
+        self.search_tree.column("date", width=90, minwidth=80, stretch=False)
+        self.search_tree.column("period", width=80, minwidth=70, stretch=False)
+        self.search_tree.column("snippet", width=520, minwidth=260, stretch=True)
+        self.search_tree.column("path", width=220, minwidth=120, stretch=True)
+
+        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.search_tree.yview)
+        x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.search_tree.xview)
+        self.search_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        self.search_tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        actions_frame = ttk.Frame(parent)
+        actions_frame.pack(fill=tk.X, pady=(10, 0))
+        self.btn_open_pdf = ttk.Button(actions_frame, text="Abrir PDF", command=self.open_selected_pdf)
+        self.btn_open_pdf.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_open_folder = ttk.Button(actions_frame, text="Abrir pasta", command=self.open_selected_folder)
+        self.btn_open_folder.pack(side=tk.LEFT)
+
+    def start_search(self, reset=True):
+        query = self.search_var.get().strip()
+        if not reset and self.search_query:
+            query = self.search_query
+        if not query:
+            self.lbl_search_summary.config(text="Digite um termo para iniciar a busca.")
+            self.lbl_search_warning.config(text="")
+            return
+        if self.search_in_progress:
+            return
+
+        if reset:
+            self.search_offset = 0
+            self.search_query = query
+            self.search_rows = {}
+            for item in self.search_tree.get_children():
+                self.search_tree.delete(item)
+        elif self.search_response:
+            self.search_offset = self.search_response.offset + len(self.search_response.results)
+            self.search_query = query
+
+        year = self._selected_filter_value(self.search_year_var.get(), 4)
+        month = self._selected_filter_value(self.search_month_var.get(), 2)
+        sort = self._selected_sort()
+        match_mode = self._selected_match_mode()
+        related_query = self.search_related_var.get().strip()
+        context_distance = self._selected_context_distance()
+        if related_query:
+            match_mode = MATCH_NEAR_CONTEXT
+        offset = self.search_offset
+        self.search_in_progress = True
+        self.search_request_id += 1
+        request_id = self.search_request_id
+        self.btn_search.config(state="disabled")
+        self.btn_load_more.config(state="disabled")
+        self.lbl_search_summary.config(text="Buscando...")
+        self.lbl_search_warning.config(text="")
+
+        threading.Thread(
+            target=self._run_search,
+            args=(request_id, query, year, month, sort, offset, match_mode, related_query, context_distance),
+            daemon=True,
+        ).start()
+
+    def on_search_filter_changed(self, _event=None):
+        if self.search_var.get().strip() and not self.search_in_progress:
+            self.start_search(reset=True)
+
+    def _run_search(self, request_id, query, year, month, sort, offset, match_mode, related_query, context_distance):
+        try:
+            response = self.search_engine.search(
+                query,
+                year=year,
+                month=month,
+                sort=sort,
+                offset=offset,
+                match_mode=match_mode,
+                related_query=related_query,
+                context_distance=context_distance,
+            )
+            self.gui_queue.put({"type": "search_results", "request_id": request_id, "response": response})
+        except Exception as error:
+            logger.exception("Erro ao executar busca textual.")
+            self.gui_queue.put({"type": "search_error", "request_id": request_id, "error": str(error)})
+
+    def apply_search_results(self, response):
+        self.search_response = response
+        self.search_offset = response.offset
+        for result in response.results:
+            iid = result.date_str
+            suffix = 1
+            while iid in self.search_rows:
+                suffix += 1
+                iid = f"{result.date_str}-{suffix}"
+            self.search_rows[iid] = result
+            self.search_tree.insert(
+                "",
+                tk.END,
+                iid=iid,
+                values=(
+                    result.display_date,
+                    f"{result.year}/{result.month}",
+                    result.snippet,
+                    str(result.pdf_path),
+                ),
+            )
+
+        visible = len(self.search_rows)
+        if response.total == 0:
+            self.lbl_search_summary.config(text="Nenhum resultado encontrado.")
+        else:
+            self.lbl_search_summary.config(text=f"Exibindo {visible} de {response.total} resultado(s).")
+
+        if response.has_pending_indexing:
+            pending = response.total_pdfs - response.indexed_pdfs
+            self.lbl_search_warning.config(
+                text=f"Aviso: ainda existem {pending} PDF(s) pendente(s) de indexação. A busca pode não cobrir toda a base."
+            )
+        else:
+            self.lbl_search_warning.config(text="")
+
+        self.btn_load_more.config(state="normal" if response.has_more else "disabled")
+        self._refresh_filter_values(response)
+
+    def apply_search_error(self, error):
+        self.lbl_search_summary.config(text="Não foi possível concluir a busca.")
+        self.lbl_search_warning.config(text=error)
+
+    def finish_search_state(self):
+        self.search_in_progress = False
+        self.entry_search.config(state="normal")
+        self.btn_search.config(state="normal")
+        if self.search_response and self.search_response.has_more:
+            self.btn_load_more.config(state="normal")
+
+    def on_tab_changed(self, _event):
+        selected_tab = self.notebook.tab(self.notebook.select(), "text")
+        if selected_tab == "Busca textual":
+            self.entry_search.config(state="normal")
+            self.root.after(50, self.entry_search.focus_set)
+
+    def _refresh_filter_values(self, response):
+        current_year = self.search_year_var.get()
+        current_month = self.search_month_var.get()
+        year_values = ["Todos"] + [f"{year} ({count})" for year, count in sorted(response.year_counts.items(), reverse=True)]
+        month_values = ["Todos"] + [f"{month} ({count})" for month, count in sorted(response.month_counts.items())]
+        self.cb_search_year.config(values=year_values)
+        self.cb_search_month.config(values=month_values)
+        current_year_value = self._selected_filter_value(current_year, 4)
+        if current_year in year_values:
+            self.search_year_var.set(current_year)
+        elif current_year_value in response.year_counts:
+            self.search_year_var.set(next(value for value in year_values if value.startswith(current_year_value)))
+        else:
+            self.search_year_var.set("Todos")
+        current_month_value = self._selected_filter_value(current_month, 2)
+        if current_month in month_values:
+            self.search_month_var.set(current_month)
+        elif current_month_value in response.month_counts:
+            self.search_month_var.set(next(value for value in month_values if value.startswith(current_month_value)))
+        else:
+            self.search_month_var.set("Todos")
+
+    def _selected_filter_value(self, value, size):
+        if not value or value == "Todos":
+            return None
+        prefix = value.strip()[:size]
+        return prefix if prefix.isdigit() else None
+
+    def _selected_sort(self):
+        label = self.search_sort_var.get()
+        if label == "Mais recentes":
+            return SORT_NEWEST
+        if label == "Mais antigos":
+            return SORT_OLDEST
+        return SORT_RELEVANCE
+
+    def _selected_match_mode(self):
+        if self.search_match_var.get() == "Contexto próximo":
+            return MATCH_NEAR_CONTEXT
+        if self.search_match_var.get() == "Frase exata":
+            return MATCH_EXACT_PHRASE
+        return MATCH_ALL_TERMS
+
+    def _selected_context_distance(self):
+        value = self.search_distance_var.get().split(" ", 1)[0]
+        try:
+            return int(value)
+        except ValueError:
+            return 50
+
+    def get_selected_search_result(self):
+        selection = self.search_tree.selection()
+        if not selection:
+            messagebox.showinfo("Busca textual", "Selecione um resultado primeiro.")
+            return None
+        return self.search_rows.get(selection[0])
+
+    def open_selected_pdf(self):
+        result = self.get_selected_search_result()
+        if result:
+            self.open_path(result.pdf_path)
+
+    def open_selected_folder(self):
+        result = self.get_selected_search_result()
+        if result:
+            self.open_path(result.pdf_path.parent)
+
+    def open_path(self, path):
+        path = os.fspath(path)
+        if not os.path.exists(path):
+            messagebox.showwarning("Busca textual", "O arquivo ou pasta não existe mais no local esperado.")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as error:
+            messagebox.showerror("Busca textual", f"Não foi possível abrir o caminho:\n{error}")
 
     def check_initial_state(self):
         if self.state_mgr.has_valid_state():
@@ -369,6 +709,14 @@ class TJRRSyncApp:
                         text=f"Total de documentos indexados: {stats['total_paginas']}"
                     )
                     self.lbl_status_indexador.config(text="Status: Indexação em segundo plano concluída.")
+                elif msg["type"] == "search_results":
+                    if msg["request_id"] == self.search_request_id:
+                        self.apply_search_results(msg["response"])
+                        self.finish_search_state()
+                elif msg["type"] == "search_error":
+                    if msg["request_id"] == self.search_request_id:
+                        self.apply_search_error(msg["error"])
+                        self.finish_search_state()
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)

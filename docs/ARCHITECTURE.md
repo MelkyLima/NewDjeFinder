@@ -4,69 +4,86 @@
 
 ```mermaid
 flowchart TD
-    A[Inicialização da interface] --> B[Carrega índice e estado]
+    A[Inicializacao da interface] --> B[Inicializa SQLite e migra dados legados]
     B --> P[Varre PDFs existentes no disco]
-    P --> C[Reconstrói a fila]
-    C --> D[Usuário inicia sincronização]
-    D --> CA{Internet & Portal Online?}
-    CA -- Não --> PE[Exibe erro na interface & Pausa]
+    P --> C[Reconstrui a fila]
+    C --> X[Indexa texto pendente em segundo plano]
+    X --> S[Busca textual consulta FTS5]
+    C --> D[Usuario inicia sincronizacao]
+    D --> CA{Internet e portal online?}
+    CA -- Nao --> PE[Exibe erro na interface e pausa]
     PE --> D
     CA -- Sim --> E[Worker seleciona uma data]
-    E --> F{PDF já existe?}
-    F -- Sim --> G[Atualiza índice]
-    F -- Não --> H[Consulta portal TJRR]
+    E --> F{PDF ja existe?}
+    F -- Sim --> G[Atualiza catalogo e indexa PDF]
+    F -- Nao --> H[Consulta portal TJRR]
     H --> I{Resposta encontrada?}
-    I -- Não (404) --> J[Marca data como verificada]
-    I -- Erro (502/Timeout/SSL) --> K[Registra falha para próxima execução]
-    I -- Sim (200) --> L[Grava arquivo .part]
-    L --> M{Cabeçalho PDF válido?}
-    M -- Não --> K
+    I -- Nao 404 --> J[Marca data como sem PDF]
+    I -- Erro --> K[Registra falha recuperavel]
+    I -- Sim 200 --> L[Grava arquivo .part]
+    L --> M{Cabecalho PDF valido?}
+    M -- Nao --> K
     M -- Sim --> N[Substitui arquivo definitivo]
     N --> G
-    G --> O[Persiste índice e estado]
+    G --> O[Persiste catalogo, estado e indice]
     J --> O
     K --> O
     O --> E
 ```
 
-## Persistência
+## Persistencia
 
-O índice e o estado são gravados em JSON por substituição atômica: primeiro é criado um arquivo temporário e, depois da escrita completa, ele substitui o arquivo anterior. Isso reduz o risco de corrupção se o processo for interrompido durante a gravação.
+O estado principal fica em SQLite no arquivo `dje_finder.db`, dentro do diretorio de dados. O banco guarda:
 
-Na inicialização, o aplicativo também varre a pasta de dados em busca de arquivos `dpj-AAAAMMDD.pdf` válidos. Isso permite restaurar apenas as pastas com PDFs de um backup; o `indice.json` será reconstruído conforme os arquivos forem encontrados. Quando não há índice restaurado, o PDF mais recente encontrado é usado como marco inicial para evitar uma nova verificação de todo o histórico.
+- `pdfs`: datas com PDF local valido;
+- `datas_sem_pdf`: datas em que o portal retornou 404 definitivo;
+- `state`: fila restante, tarefas em andamento, falhas e contadores da interface;
+- `indexed_pdfs`: status de indexacao textual por PDF;
+- `pdf_pages_fts`: conteudo textual em FTS5, com uma linha por PDF.
 
-A preparação local roda em uma thread de fundo e envia progresso para a interface. Durante essa fase, a barra mostra quantos arquivos foram analisados e as estatísticas exibem quantos PDFs válidos foram importados. A validação dos PDFs locais usa workers paralelos e o resultado da varredura é reaproveitado como cache na montagem da fila, evitando abrir os mesmos arquivos várias vezes. Intervalos grandes entre PDFs locais são tratados como lacunas do acervo e voltam para a fila de verificação.
+Arquivos legados `indice.json` e `estado.json` ainda sao reconhecidos. Na inicializacao, quando existem, seus dados sao importados para SQLite e os arquivos originais sao renomeados para `.bak`.
 
-O estado diferencia:
+A inicializacao tambem varre a pasta de dados em busca de arquivos `dpj-AAAAMMDD.pdf` validos. Isso permite restaurar apenas as pastas com PDFs de um backup; o catalogo sera reconstruido conforme os arquivos forem encontrados. Intervalos grandes entre PDFs locais sao tratados como lacunas do acervo e voltam para a fila de verificacao.
 
-- `fila_restante`: datas ainda não iniciadas;
-- `em_andamento`: datas submetidas ao executor;
-- `falhas`: datas que devem ser tentadas em uma execução futura;
-- contadores usados pela interface.
+Os PDFs sao escritos primeiro com a extensao `.pdf.part`. Somente arquivos iniciados pelo cabecalho `%PDF` sao promovidos para `.pdf`.
 
-O índice diferencia PDFs encontrados (`pdfs`) de datas verificadas sem PDF (`datas_sem_pdf`). Essa separação evita que lacunas históricas já consultadas voltem para a fila em novas execuções.
+## Indexacao textual
 
-Os PDFs também são escritos primeiro com a extensão `.pdf.part`. Somente arquivos iniciados pelo cabeçalho `%PDF` são promovidos para `.pdf`.
+`PDFIndexer` usa PyMuPDF para extrair texto dos PDFs. A indexacao completa usa produtores em `ProcessPoolExecutor` para extracao e uma thread escritora unica para inserir no SQLite em lotes, reduzindo disputa de escrita.
 
-## Concorrência
+O schema atual do FTS5 usa uma linha por PDF. Se um banco antigo com schema por pagina for encontrado, a tabela FTS5 e recriada e os PDFs voltam para a fila de reindexacao.
 
-`WorkerController` usa `ThreadPoolExecutor` porque o trabalho é predominantemente de rede e disco. O modo selecionado define o número de workers e um limitador compartilhado do tipo token bucket.
+`PDFSearchEngine` concentra as consultas ao FTS5 para manter SQL fora da interface. A GUI chama esse modulo em uma thread de fundo e recebe os resultados pela mesma fila usada pelos workers, evitando travar o Tkinter.
 
-As consultas ao portal reutilizam uma sessão HTTP por thread para aproveitar conexões persistentes. A interface separa bytes baixados de datas consultadas por segundo, porque muitas datas históricas podem não possuir PDF e, nesse caso, há atividade de rede sem tráfego relevante de download.
+A busca retorna resultados paginados, contagens por ano/mes, estatisticas de indexacao e caminhos dos PDFs locais. Ela oferece tres modos de correspondencia: todos os termos em qualquer ponto do documento, frase exata com os termos adjacentes e na mesma ordem, ou contexto proximo entre dois grupos de termos. Isso deixa a mesma camada pronta para uma futura interface Web sem duplicar regras de consulta.
+
+No modo de contexto proximo, o FTS5 primeiro reduz os candidatos exigindo os dois grupos de termos. Em seguida, o Python valida se os grupos aparecem dentro da distancia configurada em palavras. Essa segunda etapa permite tratar nomes completos como frase e comparar proximidade com termos como `elogiar`, `nomear` ou `exonerar`.
+
+## Interface Web
+
+`streamlit_app.py` oferece uma interface Web local para consulta, usando o mesmo `PDFSearchEngine`. Ela nao executa sincronizacao nem indexacao; essas tarefas continuam no app desktop. A pagina espera encontrar `dje_finder.db` e os PDFs no diretorio de dados configurado.
+
+No Streamlit Community Cloud, a base precisa estar presente no ambiente publicado ou vir de armazenamento externo. O caminho local `~/Documents/PDF-Dje` e util no computador do usuario, mas nao existe automaticamente na nuvem.
+
+## Concorrencia
+
+`WorkerController` usa `ThreadPoolExecutor` porque sincronizacao e predominantemente trabalho de rede e disco. O modo selecionado define o numero de workers e um limitador compartilhado do tipo token bucket.
+
+As consultas ao portal reutilizam uma sessao HTTP por thread para aproveitar conexoes persistentes. A interface separa bytes baixados de datas consultadas por segundo, porque muitas datas historicas podem nao possuir PDF e, nesse caso, ha atividade de rede sem trafego relevante de download.
 
 | Modo | Limite agregado aproximado | Workers |
 | --- | ---: | ---: |
 | Lento | 1 MB/s | 2 |
-| Rápido | 5 MB/s | 8 |
+| Rapido | 5 MB/s | 8 |
 | Turbo | Ilimitado | 16 |
 
-As mensagens dos workers chegam à interface por uma `queue.Queue`, evitando atualizações do Tkinter fora da thread principal.
+As mensagens dos workers chegam a interface por uma `queue.Queue`, evitando atualizacoes do Tkinter fora da thread principal.
 
-## Melhorias futuras sugeridas
+## Proximas melhorias sugeridas
 
-1. Separar as classes em um pacote `dje_finder`.
-2. Adicionar cancelamento cooperativo das requisições em andamento.
-3. Descobrir edições por uma fonte de catálogo, caso o TJRR disponibilize uma API.
-4. Implementar pesquisa textual com extração/OCR opcional.
-5. Adicionar tela de preferências para pasta, período e quantidade de workers.
-6. Exibir histórico detalhado de falhas e permitir nova tentativa imediata.
+1. Melhorar a experiencia da busca com destaque visual mais rico no trecho encontrado.
+2. Adicionar tela de preferencias para pasta, periodo e quantidade de workers.
+3. Exibir historico detalhado de falhas com nova tentativa imediata.
+4. Adicionar logs rotativos em arquivo para facilitar suporte.
+5. Avaliar OCR opcional para PDFs sem camada de texto.
+6. Conectar a interface Web a armazenamento externo para publicacao em nuvem.
