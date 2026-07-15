@@ -170,6 +170,8 @@ class TJRRSyncApp:
         self.cb_search_month.pack(side=tk.LEFT, padx=(0, 12))
         self.cb_search_month.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
+        self._populate_initial_search_filters()
+
         ttk.Label(filters_frame, text="Modo:").pack(side=tk.LEFT, padx=(0, 6))
         self.search_match_var = tk.StringVar(value="Todos os termos")
         self.cb_search_match = ttk.Combobox(
@@ -277,7 +279,44 @@ class TJRRSyncApp:
             daemon=True,
         ).start()
 
+    def _populate_initial_search_filters(self):
+        years = ["Todos"]
+        months = ["Todos"]
+        try:
+            available_years = self.search_engine.get_available_years()
+            if available_years:
+                years.extend(available_years)
+            selected_year = self.search_year_var.get()
+            if selected_year != "Todos":
+                available_months = self.search_engine.get_available_months(selected_year)
+            else:
+                available_months = self.search_engine.get_available_months()
+            if available_months:
+                months.extend(available_months)
+        except Exception:
+            available_years = []
+            available_months = []
+
+        self.cb_search_year.config(values=years)
+        self.cb_search_month.config(values=months)
+        self.search_year_var.set("Todos")
+        self.search_month_var.set("Todos")
+
     def on_search_filter_changed(self, _event=None):
+        if _event and _event.widget == self.cb_search_year:
+            selected_year = self.search_year_var.get()
+            try:
+                if selected_year != "Todos":
+                    available_months = self.search_engine.get_available_months(selected_year)
+                else:
+                    available_months = self.search_engine.get_available_months()
+                month_values = ["Todos"] + (available_months or [])
+                self.cb_search_month.config(values=month_values)
+                if self.search_month_var.get() not in month_values:
+                    self.search_month_var.set("Todos")
+            except Exception:
+                pass
+
         if self.search_var.get().strip() and not self.search_in_progress:
             self.start_search(reset=True)
 

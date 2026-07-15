@@ -49,20 +49,16 @@ def db_exists():
 def result_rows(results):
     return [
         {
-            "Data": result.display_date,
-            "Ano/Mes": f"{result.year}/{result.month}",
+            "Arquivo": f"{Config.BASE_URL.format(result.date_str)}?label=DJE {result.display_date}",
             "Trecho": result.snippet.replace("[", "").replace("]", ""),
-            "Arquivo": result.pdf_path.name,
-            "Caminho": str(result.pdf_path),
         }
         for result in results
     ]
 
 
 def render_main_filters():
-    st.header("Busca")
-    query = st.text_input("Termo principal", placeholder="Ex.: melquizedeque lima pereira")
-    related_query = st.text_input("Perto de", placeholder="Ex.: elogiar")
+    query = st.text_input("", placeholder="Informe um termo para busca no DJE")
+    related_query = st.text_input("Contexto", placeholder="Informe um segundo termo para busca no DJE (Opcional)")
 
     cols = st.columns([3, 2])
     with cols[0]:
@@ -78,34 +74,18 @@ def render_main_filters():
     return query, related_query, match_label, distance_label
 
 
-def render_sidebar_filters():
+def render_sidebar_filters(engine, year_options):
     st.sidebar.header("Filtros")
-    year_filter = st.sidebar.text_input("Ano", placeholder="Todos")
-    month_filter = st.sidebar.text_input("Mes", placeholder="Todos")
-    sort_label = st.sidebar.selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=0)
+    year_options = ["Todos"] + year_options if year_options else ["Todos"]
+
+    year_filter = st.sidebar.selectbox("Ano", year_options, index=0)
+    month_options = engine.get_available_months(year_filter if year_filter != "Todos" else None)
+    month_options = ["Todos"] + month_options if month_options else ["Todos"]
+
+    month_filter = st.sidebar.selectbox("Mes", month_options, index=0)
+    sort_label = st.sidebar.selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=1)
 
     return year_filter, month_filter, sort_label
-
-
-def render_download_picker(results):
-    options = {
-        f"{result.display_date} - {result.pdf_path.name}": result
-        for result in results
-        if result.pdf_path.is_file()
-    }
-    if not options:
-        return
-
-    with st.expander("Baixar PDF"):
-        selected = st.selectbox("Resultado", list(options.keys()))
-        result = options[selected]
-        with result.pdf_path.open("rb") as pdf_file:
-            st.download_button(
-                "Baixar PDF selecionado",
-                data=pdf_file,
-                file_name=result.pdf_path.name,
-                mime="application/pdf",
-            )
 
 
 def render_search(engine, filters):
@@ -164,36 +144,28 @@ def render_search(engine, filters):
             "A busca pode nao cobrir toda a base."
         )
 
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("PDFs baixados", response.total_pdfs)
-    metric_cols[1].metric("PDFs indexados", response.indexed_pdfs)
-    metric_cols[2].metric("Falhas de indexacao", response.failed_pdfs)
-
-    if response.year_counts:
-        with st.expander("Contagem por ano/mes"):
-            st.write("Anos:", response.year_counts)
-            st.write("Meses:", response.month_counts)
-
     if not response.results:
         st.info("Nenhum resultado encontrado para os filtros atuais.")
         return
 
     table = pd.DataFrame(result_rows(response.results))
+
+    # Pass plain DataFrame so Streamlit applies column_config widths correctly.
     st.dataframe(
         table,
         hide_index=True,
         use_container_width=True,
         height=min(620, 38 + (len(response.results) + 1) * 35),
         column_config={
-            "Data": st.column_config.TextColumn("Data", width="small"),
-            "Ano/Mes": st.column_config.TextColumn("Ano/Mes", width="small"),
-            "Trecho": st.column_config.TextColumn("Trecho", width="large"),
-            "Arquivo": st.column_config.TextColumn("Arquivo", width="medium"),
-            "Caminho": st.column_config.TextColumn("Caminho", width="large"),
+            "Trecho": st.column_config.TextColumn("Trecho", width="large", alignment="left"),
+            "Arquivo": st.column_config.LinkColumn(
+                "Arquivo",
+                width="small",
+                alignment="center",
+                display_text=r"^.*label=(.*)$",
+            ),
         },
     )
-
-    render_download_picker(response.results)
 
     nav_cols = st.columns([1, 1, 6])
     if nav_cols[0].button("Anterior", disabled=response.offset == 0):
@@ -205,14 +177,87 @@ def render_search(engine, filters):
 
 
 def main():
-    st.set_page_config(page_title="DJE Finder TJRR", layout="wide")
-    st.title("DJE Finder TJRR")
-    st.caption("Busca textual nos PDFs indexados localmente.")
+    st.set_page_config(page_title="Buscador DJE", layout="wide")
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&display=swap');
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Orbitron', 'Segoe UI', sans-serif !important;
+        }
+        /* Header card */
+        .hero-card {
+            text-align: center;
+            padding: 0.8rem 1.4rem 0.75rem;
+            margin: 0 0 0.8rem;
+            border-radius: 20px;
+            background: linear-gradient(135deg, rgba(79, 70, 229, 0.16), rgba(6, 182, 212, 0.12), rgba(16, 185, 129, 0.14));
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+        }
+        .hero-card h1 {
+            font-size: 2.35rem;
+            font-weight: 900;
+            margin: 0;
+            line-height: 1;
+            letter-spacing: 0.08em;
+            background: linear-gradient(90deg, #4f46e5, #06b6d4, #10b981);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* DataFrame tweaks: center headers only; make Arquivo column fit content */
+        [data-testid="stDataFrameContainer"] table thead th,
+        [data-testid="stDataFrame"] table thead th {
+            text-align: center !important;
+        }
+
+        /* Keep first column (Arquivo) centered */
+        [data-testid="stDataFrameContainer"] table tbody td:first-child,
+        [data-testid="stDataFrame"] table tbody td:first-child {
+            text-align: center !important;
+            white-space: nowrap !important;
+            width: 1px !important;
+        }
+
+        /* Make last column (Trecho) left-aligned */
+        [data-testid="stDataFrameContainer"] table tbody td:last-child,
+        [data-testid="stDataFrame"] table tbody td:last-child {
+            text-align: left !important;
+            white-space: normal !important;
+        }
+
+        /* Fix Arquivo column width to roughly 16 characters */
+        [data-testid="stDataFrameContainer"] table tbody td:first-child,
+        [data-testid="stDataFrame"] table tbody td:first-child {
+            text-align: center !important;
+            white-space: nowrap !important;
+            width: 16ch !important;
+            max-width: 16ch !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+
+        /* Allow table layout to auto-size columns */
+        [data-testid="stDataFrameContainer"] table,
+        [data-testid="stDataFrame"] table {
+            table-layout: auto !important;
+        }
+        </style>
+        <div class="hero-card">
+            <h1>Buscador DJE</h1>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     configure_data_dir(Config.BASE_DIR)
+
+    engine = PDFSearchEngine(page_size=PAGE_SIZE)
+    year_options = engine.get_available_years() if db_exists() else []
 
     filters_main = render_main_filters()
     with st.sidebar:
-        filters_sidebar = render_sidebar_filters()
+        filters_sidebar = render_sidebar_filters(engine, year_options)
 
     filters = (*filters_main, *filters_sidebar)
 
