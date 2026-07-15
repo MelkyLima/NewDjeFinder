@@ -85,7 +85,9 @@ def render_sidebar_filters(engine, year_options):
     month_filter = st.sidebar.selectbox("Mes", month_options, index=0)
     sort_label = st.sidebar.selectbox("Ordenar", list(SORT_OPTIONS.keys()), index=1)
 
-    return year_filter, month_filter, sort_label
+    view_mode = st.sidebar.radio("Exibir como", ["Tabela", "Lista", "Cartões"], index=0)
+
+    return year_filter, month_filter, sort_label, view_mode
 
 
 def render_search(engine, filters):
@@ -94,7 +96,7 @@ def render_search(engine, filters):
     if "last_search_key" not in st.session_state:
         st.session_state.last_search_key = None
 
-    query, related_query, match_label, distance_label, year_filter, month_filter, sort_label = filters
+    query, related_query, match_label, distance_label, year_filter, month_filter, sort_label, view_mode = filters
 
     search_key = (
         query.strip(),
@@ -148,24 +150,55 @@ def render_search(engine, filters):
         st.info("Nenhum resultado encontrado para os filtros atuais.")
         return
 
-    table = pd.DataFrame(result_rows(response.results))
-
-    # Pass plain DataFrame so Streamlit applies column_config widths correctly.
-    st.dataframe(
-        table,
-        hide_index=True,
-        use_container_width=True,
-        height=min(620, 38 + (len(response.results) + 1) * 35),
-        column_config={
-            "Trecho": st.column_config.TextColumn("Trecho", width="large", alignment="left"),
-            "Arquivo": st.column_config.LinkColumn(
-                "Arquivo",
-                width="small",
-                alignment="center",
-                display_text=r"^.*label=(.*)$",
-            ),
-        },
-    )
+    # Renderizar conforme o modo selecionado
+    if view_mode == "Tabela":
+        table = pd.DataFrame(result_rows(response.results))
+        st.dataframe(
+            table,
+            hide_index=True,
+            use_container_width=True,
+            height=min(620, 38 + (len(response.results) + 1) * 35),
+            column_config={
+                "Trecho": st.column_config.TextColumn("Trecho", width="large", alignment="left"),
+                "Arquivo": st.column_config.LinkColumn(
+                    "Arquivo",
+                    width="small",
+                    alignment="center",
+                    display_text=r"^.*label=(.*)$",
+                ),
+            },
+        )
+    elif view_mode == "Lista":
+        # Lista refinada: data (link) à esquerda, trecho à direita, com separador
+        st.markdown("<div style='margin-bottom:8px;'><strong>Resultados</strong></div>", unsafe_allow_html=True)
+        for result in response.results:
+            url = f"{Config.BASE_URL.format(result.date_str)}?label=DJE {result.display_date}"
+            cols = st.columns([1.2, 8.8])
+            cols[0].markdown(
+                f'<a href="{url}" target="_blank" rel="noopener noreferrer">DJE {result.display_date}</a>',
+                unsafe_allow_html=True,
+            )
+            cols[1].markdown(result.snippet.replace("[", "").replace("]", ""))
+            st.markdown("<hr style='border-color: rgba(255,255,255,0.04);'/>", unsafe_allow_html=True)
+    else:  # Cartões
+        # Cartões responsivos: 2 colunas por linha, cada cartão com link e trecho
+        card_style = (
+            "border:1px solid rgba(255,255,255,0.06); padding:12px; border-radius:8px;"
+            " background: rgba(255,255,255,0.01); margin-bottom:12px;"
+        )
+        for i in range(0, len(response.results), 2):
+            pair = response.results[i : i + 2]
+            cols = st.columns(2)
+            for j, result in enumerate(pair):
+                url = f"{Config.BASE_URL.format(result.date_str)}?label=DJE {result.display_date}"
+                html = (
+                    f"<div style=\"{card_style}\">"
+                    f"<div style='margin-bottom:6px; font-weight:600;'><a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">DJE {result.display_date}</a></div>"
+                    f"<div style='color: #c9c9c9; margin-bottom:8px;'>{result.snippet.replace('[', '').replace(']', '')}</div>"
+                    f"<div><a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\">Abrir documento</a></div>"
+                    f"</div>"
+                )
+                cols[j].markdown(html, unsafe_allow_html=True)
 
     nav_cols = st.columns([1, 1, 6])
     if nav_cols[0].button("Anterior", disabled=response.offset == 0):
@@ -217,7 +250,6 @@ def main():
         [data-testid="stDataFrame"] table tbody td:first-child {
             text-align: center !important;
             white-space: nowrap !important;
-            width: 1px !important;
         }
 
         /* Make last column (Trecho) left-aligned */
@@ -238,10 +270,28 @@ def main():
             text-overflow: ellipsis !important;
         }
 
-        /* Allow table layout to auto-size columns */
+        /* Use fixed table layout to avoid extra empty column when autosizing */
         [data-testid="stDataFrameContainer"] table,
         [data-testid="stDataFrame"] table {
-            table-layout: auto !important;
+            table-layout: fixed !important;
+            width: 100% !important;
+            border-collapse: collapse !important;
+        }
+
+        /* Hide completely empty header/cells to collapse any phantom column */
+        [data-testid="stDataFrameContainer"] table thead th:empty,
+        [data-testid="stDataFrame"] table thead th:empty,
+        [data-testid="stDataFrameContainer"] table tbody td:empty,
+        [data-testid="stDataFrame"] table tbody td:empty {
+            display: none !important;
+            padding: 0 !important;
+            border: none !important;
+        }
+
+        /* Remove rightmost border on last visible cell to avoid thin gap */
+        [data-testid="stDataFrameContainer"] table tbody td:last-child,
+        [data-testid="stDataFrame"] table tbody td:last-child {
+            border-right: none !important;
         }
         </style>
         <div class="hero-card">
