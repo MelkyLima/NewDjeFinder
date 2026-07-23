@@ -5,7 +5,12 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox
+import customtkinter as ctk
+
+if os.name == "nt":
+    import ctypes
 from dje_finder.config import APP_NAME, logger
 from dje_finder.persistence import IndexManager, StateManager
 from dje_finder.search import (
@@ -19,12 +24,31 @@ from dje_finder.search import (
 )
 from dje_finder.worker import WorkerController
 
+
+def _ctk_config(self, *args, **kwargs):
+    if "foreground" in kwargs:
+        kwargs["text_color"] = kwargs.pop("foreground")
+    return self.configure(*args, **kwargs)
+
+
+for _widget_class in (
+    ctk.CTkButton,
+    ctk.CTkComboBox,
+    ctk.CTkEntry,
+    ctk.CTkFrame,
+    ctk.CTkLabel,
+    ctk.CTkProgressBar,
+):
+    _widget_class.config = _ctk_config
+
 class TJRRSyncApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("980x760")
-        self.root.minsize(820, 620)
+        self.root.geometry("1180x760")
+        self.root.minsize(980, 640)
+        self.apply_window_chrome()
+        self.root.after(250, self.apply_window_chrome)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         self.gui_queue = queue.Queue()
@@ -52,164 +76,594 @@ class TJRRSyncApp:
         self.update_speed_label()
  
     def setup_ui(self):
-        style = ttk.Style()
-        style.theme_use('clam')
+        self.configure_modern_theme()
         
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
 
-        main_frame = ttk.Frame(self.notebook, padding=20)
-        search_frame = ttk.Frame(self.notebook, padding=16)
-        self.notebook.add(main_frame, text="Sincronização")
-        self.notebook.add(search_frame, text="Busca textual")
+        shell_frame = ctk.CTkFrame(self.root, fg_color=self.colors["window"], corner_radius=0)
+        shell_frame.pack(fill=tk.BOTH, expand=True)
+
+        sidebar = ctk.CTkFrame(shell_frame, width=230, fg_color=self.colors["sidebar"], corner_radius=0)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 0), pady=0)
+        sidebar.pack_propagate(False)
+
+        brand_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        brand_frame.pack(fill=tk.X, padx=16, pady=(18, 28))
+        ctk.CTkLabel(
+            brand_frame,
+            text="DJE",
+            width=44,
+            height=34,
+            corner_radius=10,
+            fg_color=self.colors["accent"],
+            text_color="#ffffff",
+            font=(self.font_family, 12, "bold"),
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            brand_frame,
+            text="Finder",
+            text_color="#ffffff",
+            font=(self.font_family, 16, "bold"),
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        self.nav_buttons = {}
+        self.create_nav_button(sidebar, "sync", "Sincronização").pack(fill=tk.X, padx=14, pady=(0, 8))
+        self.create_nav_button(sidebar, "search", "Busca textual").pack(fill=tk.X, padx=14, pady=(0, 8))
+
+        ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill=tk.BOTH, expand=True)
+        ctk.CTkLabel(
+            sidebar,
+            text="TJRR PDF Sync",
+            text_color="#7f8ba3",
+            font=(self.font_family, 9),
+        ).pack(anchor=tk.W, padx=16, pady=(12, 18))
+
+        content_frame = ctk.CTkFrame(shell_frame, fg_color=self.colors["window"], corner_radius=0)
+        content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=22, pady=(20, 22))
+
+        self.page_title = ctk.CTkLabel(content_frame, text="", text_color="#ffffff", font=(self.font_family, 22, "bold"))
+        self.page_title.pack(anchor=tk.W, pady=(0, 4))
+        self.page_subtitle = ctk.CTkLabel(content_frame, text="", text_color=self.colors["muted"], font=(self.font_family, 10))
+        self.page_subtitle.pack(anchor=tk.W, pady=(0, 18))
+
+        page_host = ctk.CTkFrame(content_frame, fg_color="transparent", corner_radius=0)
+        page_host.pack(fill=tk.BOTH, expand=True)
+
+        main_frame = ctk.CTkFrame(
+            page_host,
+            fg_color=self.colors["surface"],
+            corner_radius=18,
+            border_width=1,
+            border_color=self.colors["border"],
+        )
+        search_frame = ctk.CTkFrame(
+            page_host,
+            fg_color=self.colors["surface"],
+            corner_radius=18,
+            border_width=1,
+            border_color=self.colors["border"],
+        )
+        self.pages = {
+            "sync": main_frame,
+            "search": search_frame,
+        }
         
-        self.btn_action = ttk.Button(main_frame, text="ATUALIZAR Base de PDFs", command=self.toggle_action)
-        self.btn_action.pack(side=tk.BOTTOM, fill=tk.X, ipady=8, pady=(10, 0))
+        self.btn_action = ctk.CTkButton(
+            main_frame,
+            text="ATUALIZAR Base de PDFs",
+            command=self.toggle_action,
+            corner_radius=12,
+            height=44,
+            fg_color=self.colors["accent"],
+            hover_color=self.colors["accent_hover"],
+            font=(self.font_family, 10, "bold"),
+        )
+        self.btn_action.pack(side=tk.BOTTOM, fill=tk.X, padx=22, pady=(10, 22))
         
-        self.lbl_erro = ttk.Label(main_frame, text="", foreground="red", wraplength=900)
-        self.lbl_erro.pack(side=tk.BOTTOM, fill=tk.X)
+        self.lbl_erro = ctk.CTkLabel(main_frame, text="", text_color=self.colors["error"], wraplength=900)
+        self.lbl_erro.pack(side=tk.BOTTOM, fill=tk.X, padx=22)
         
-        self.lbl_pdf_atual = ttk.Label(main_frame, text="PDF atual: Aguardando...", font=("Segoe UI", 10, "bold"))
-        self.lbl_pdf_atual.pack(anchor=tk.W, pady=(0, 10))
+        self.lbl_pdf_atual = ctk.CTkLabel(
+            main_frame,
+            text="PDF atual: Aguardando...",
+            text_color=self.colors["text"],
+            font=(self.font_family, 12, "bold"),
+        )
+        self.lbl_pdf_atual.pack(anchor=tk.W, padx=22, pady=(22, 14))
         
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+        self.progress_var.trace_add("write", self.update_progress_bar)
+        self.progress_bar = ctk.CTkProgressBar(
+            main_frame,
+            height=12,
+            corner_radius=6,
+            fg_color="#111827",
+            progress_color=self.colors["accent"],
+        )
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill=tk.X, padx=22, pady=(0, 5))
         
-        self.lbl_pct = ttk.Label(main_frame, text="0.00%")
-        self.lbl_pct.pack(anchor=tk.E, pady=(0, 15))
+        self.lbl_pct = ctk.CTkLabel(main_frame, text="0.00%", text_color=self.colors["muted"])
+        self.lbl_pct.pack(anchor=tk.E, padx=22, pady=(0, 15))
         
-        info_frame = ttk.LabelFrame(main_frame, text="Estatísticas", padding=10)
-        info_frame.pack(fill=tk.X, pady=(0, 10))
+        info_frame = ctk.CTkFrame(
+            main_frame,
+            fg_color=self.colors["surface_alt"],
+            corner_radius=16,
+            border_width=1,
+            border_color=self.colors["border"],
+        )
+        info_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
+        ctk.CTkLabel(
+            info_frame,
+            text="Estatísticas",
+            text_color=self.colors["text"],
+            font=(self.font_family, 10, "bold"),
+        ).pack(anchor=tk.W, padx=16, pady=(14, 8))
         
-        self.lbl_localizados = ttk.Label(info_frame, text="PDFs Totais localizados: 0")
-        self.lbl_localizados.pack(anchor=tk.W, pady=2)
+        self.lbl_localizados = ctk.CTkLabel(info_frame, text="PDFs Totais localizados: 0", text_color=self.colors["text"])
+        self.lbl_localizados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_atualizaveis = ttk.Label(info_frame, text="Datas pendentes de verificação: 0")
-        self.lbl_atualizaveis.pack(anchor=tk.W, pady=2)
+        self.lbl_atualizaveis = ctk.CTkLabel(info_frame, text="Datas pendentes de verificação: 0", text_color=self.colors["text"])
+        self.lbl_atualizaveis.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_baixados = ttk.Label(info_frame, text="PDFs Totais baixados: 0")
-        self.lbl_baixados.pack(anchor=tk.W, pady=2)
+        self.lbl_baixados = ctk.CTkLabel(info_frame, text="PDFs Totais baixados: 0", text_color=self.colors["text"])
+        self.lbl_baixados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_progresso = ttk.Label(info_frame, text="PDFs em progresso: 0")
-        self.lbl_progresso.pack(anchor=tk.W, pady=2)
+        self.lbl_progresso = ctk.CTkLabel(info_frame, text="PDFs em progresso: 0", text_color=self.colors["text"])
+        self.lbl_progresso.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_fila = ttk.Label(info_frame, text="PDFs na fila: 0")
-        self.lbl_fila.pack(anchor=tk.W, pady=2)
+        self.lbl_fila = ctk.CTkLabel(info_frame, text="PDFs na fila: 0", text_color=self.colors["text"])
+        self.lbl_fila.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_velocidade_real = ttk.Label(info_frame, text="Velocidade de download: 0 KB/s", font=("Segoe UI", 9, "italic"))
-        self.lbl_velocidade_real.pack(anchor=tk.W, pady=2)
+        self.lbl_velocidade_real = ctk.CTkLabel(info_frame, text="Velocidade de download: 0 KB/s", text_color=self.colors["muted"])
+        self.lbl_velocidade_real.pack(anchor=tk.W, padx=16, pady=(2, 14))
         
-        indexer_frame = ttk.LabelFrame(main_frame, text="Busca Textual (Conteúdo)", padding=10)
-        indexer_frame.pack(fill=tk.X, pady=(0, 10))
+        indexer_frame = ctk.CTkFrame(
+            main_frame,
+            fg_color=self.colors["surface_alt"],
+            corner_radius=16,
+            border_width=1,
+            border_color=self.colors["border"],
+        )
+        indexer_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
+        ctk.CTkLabel(
+            indexer_frame,
+            text="Busca Textual (Conteúdo)",
+            text_color=self.colors["text"],
+            font=(self.font_family, 10, "bold"),
+        ).pack(anchor=tk.W, padx=16, pady=(14, 8))
         
-        self.lbl_indexados = ttk.Label(indexer_frame, text="PDFs Indexados para busca: 0")
-        self.lbl_indexados.pack(anchor=tk.W, pady=2)
+        self.lbl_indexados = ctk.CTkLabel(indexer_frame, text="PDFs Indexados para busca: 0", text_color=self.colors["text"])
+        self.lbl_indexados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_paginas_indexadas = ttk.Label(indexer_frame, text="Total de documentos indexados: 0")
-        self.lbl_paginas_indexadas.pack(anchor=tk.W, pady=2)
+        self.lbl_paginas_indexadas = ctk.CTkLabel(indexer_frame, text="Total de documentos indexados: 0", text_color=self.colors["text"])
+        self.lbl_paginas_indexadas.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_status_indexador = ttk.Label(indexer_frame, text="Status do buscador: Aguardando...", font=("Segoe UI", 9, "italic"))
-        self.lbl_status_indexador.pack(anchor=tk.W, pady=2)
+        self.lbl_status_indexador = ctk.CTkLabel(indexer_frame, text="Status do buscador: Aguardando...", text_color=self.colors["muted"])
+        self.lbl_status_indexador.pack(anchor=tk.W, padx=16, pady=(2, 14))
         
-        speed_frame = ttk.Frame(main_frame)
-        speed_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(speed_frame, text="Modo:").pack(side=tk.LEFT, padx=(0, 10))
-        self.cb_speed = ttk.Combobox(speed_frame, values=["1 - Lento (1MB/s)", "2 - Rápido (5MB/s)", "3 - Turbo (Ilimitado)"], state="readonly")
-        self.cb_speed.current(1)
+        speed_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        speed_frame.pack(fill=tk.X, padx=22, pady=(0, 10))
+        ctk.CTkLabel(speed_frame, text="Modo:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 10))
+        self.cb_speed = ctk.CTkComboBox(
+            speed_frame,
+            values=["1 - Lento (1MB/s)", "2 - Rápido (5MB/s)", "3 - Turbo (Ilimitado)"],
+            state="readonly",
+            corner_radius=10,
+            fg_color="#111827",
+            border_color=self.colors["border"],
+            button_color=self.colors["surface_alt"],
+            button_hover_color=self.colors["nav_selected"],
+            dropdown_fg_color="#111827",
+            dropdown_hover_color=self.colors["nav_selected"],
+            dropdown_text_color=self.colors["text"],
+            text_color=self.colors["text"],
+        )
+        self.cb_speed.set("2 - Rápido (5MB/s)")
         self.cb_speed.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.setup_search_ui(search_frame)
-        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        self.show_page("sync")
+
+    def apply_window_chrome(self):
+        try:
+            self.root.attributes("-alpha", 0.94)
+        except tk.TclError:
+            pass
+
+        if os.name != "nt":
+            return
+
+        try:
+            self.root.update_idletasks()
+            hwnd = self.root.winfo_id()
+
+            dark_mode = ctypes.c_int(1)
+            rounded = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode))
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(rounded), ctypes.sizeof(rounded))
+        except Exception:
+            pass
+
+    def get_modern_font_family(self):
+        available_fonts = set(tkfont.families(self.root))
+        if "Segoe UI Variable Text" in available_fonts:
+            return "Segoe UI Variable Text"
+        if "Segoe UI Variable" in available_fonts:
+            return "Segoe UI Variable"
+        return "Segoe UI"
+
+    def create_nav_button(self, parent, page, text):
+        button = ctk.CTkButton(
+            parent,
+            text=text,
+            anchor="w",
+            height=46,
+            corner_radius=12,
+            fg_color="transparent",
+            hover_color=self.colors["nav_hover"],
+            text_color=self.colors["sidebar_text"],
+            cursor="hand2",
+            font=(self.font_family, 10, "bold"),
+            command=lambda: self.show_page(page),
+        )
+        self.nav_buttons[page] = button
+        return button
+
+    def create_combo(self, parent, variable, values, width, command):
+        return ctk.CTkComboBox(
+            parent,
+            variable=variable,
+            values=values,
+            width=width,
+            height=32,
+            state="readonly",
+            command=command,
+            corner_radius=10,
+            fg_color="#111827",
+            border_color=self.colors["border"],
+            button_color=self.colors["surface_alt"],
+            button_hover_color=self.colors["nav_selected"],
+            dropdown_fg_color="#111827",
+            dropdown_hover_color=self.colors["nav_selected"],
+            dropdown_text_color=self.colors["text"],
+            text_color=self.colors["text"],
+            font=(self.font_family, 10),
+            dropdown_font=(self.font_family, 10),
+        )
+
+    def update_progress_bar(self, *_args):
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.set(self.progress_var.get() / 100.0)
+
+    def show_page(self, page):
+        titles = {
+            "sync": ("Sincronização", "Atualize a base local de PDFs e acompanhe a indexação."),
+            "search": ("Busca textual", "Pesquise termos nos documentos indexados."),
+        }
+        for page_name, frame in self.pages.items():
+            if page_name == page:
+                frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                frame.pack_forget()
+
+        for page_name, button in self.nav_buttons.items():
+            selected = page_name == page
+            button.configure(
+                fg_color=self.colors["nav_selected"] if selected else "transparent",
+                text_color="#ffffff" if selected else self.colors["sidebar_text"],
+            )
+
+        title, subtitle = titles[page]
+        self.page_title.config(text=title)
+        self.page_subtitle.config(text=subtitle)
+        if page == "search":
+            self.entry_search.config(state="normal")
+            self.root.after(50, self.entry_search.focus_set)
+
+    def configure_modern_theme(self):
+        self.colors = {
+            "window": "#09111f",
+            "sidebar": "#0f1724",
+            "nav_hover": "#1f2a3a",
+            "nav_selected": "#2b3b59",
+            "sidebar_text": "#d7deea",
+            "surface": "#1b2331",
+            "surface_alt": "#242d3f",
+            "border": "#3a465a",
+            "text": "#f8fafc",
+            "muted": "#a7b1c2",
+            "accent": "#3b82f6",
+            "accent_hover": "#60a5fa",
+            "accent_pressed": "#2563eb",
+            "error": "#f87171",
+            "warning": "#fbbf24",
+            "selection": "#34445e",
+        }
+
+        self.root.configure(bg=self.colors["window"])
+        self.font_family = self.get_modern_font_family()
+        self.root.option_add("*Font", f"{{{self.font_family}}} 10")
+        tkfont.nametofont("TkDefaultFont").configure(family=self.font_family, size=10)
+        tkfont.nametofont("TkTextFont").configure(family=self.font_family, size=10)
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(".", font=(self.font_family, 10), background=self.colors["window"], foreground=self.colors["text"])
+        style.configure("App.TFrame", background=self.colors["window"])
+        style.configure("Sidebar.TFrame", background=self.colors["sidebar"])
+        style.configure("TFrame", background=self.colors["window"])
+        style.configure("Surface.TFrame", background=self.colors["surface"])
+        style.configure("TLabel", background=self.colors["surface"], foreground=self.colors["text"])
+        style.configure("Muted.TLabel", background=self.colors["surface"], foreground=self.colors["muted"])
+        style.configure("Title.TLabel", background=self.colors["surface"], foreground=self.colors["text"], font=(self.font_family, 12, "bold"))
+        style.configure("Error.TLabel", background=self.colors["surface"], foreground=self.colors["error"])
+        style.configure("Warning.TLabel", background=self.colors["surface"], foreground=self.colors["warning"])
+        style.configure("Brand.TLabel", background=self.colors["sidebar"], foreground="#ffffff", font=(self.font_family, 16, "bold"))
+        style.configure("BrandMark.TLabel", background=self.colors["accent"], foreground="#ffffff", font=(self.font_family, 12, "bold"), padding=(10, 6))
+        style.configure("SidebarMuted.TLabel", background=self.colors["sidebar"], foreground="#7f8ba3", font=(self.font_family, 9))
+        style.configure("PageTitle.TLabel", background=self.colors["window"], foreground="#ffffff", font=(self.font_family, 22, "bold"))
+        style.configure("PageSubtitle.TLabel", background=self.colors["window"], foreground=self.colors["muted"], font=(self.font_family, 10))
+
+        style.configure("TNotebook", background=self.colors["window"], borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure(
+            "TNotebook.Tab",
+            background=self.colors["surface_alt"],
+            foreground=self.colors["muted"],
+            borderwidth=0,
+            padding=(18, 10),
+            font=(self.font_family, 10, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", self.colors["surface"]), ("active", self.colors["surface_alt"])],
+            foreground=[("selected", self.colors["accent"]), ("active", self.colors["text"])],
+        )
+
+        style.configure(
+            "Card.TLabelframe",
+            background=self.colors["surface"],
+            bordercolor=self.colors["border"],
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=self.colors["surface"],
+            foreground=self.colors["text"],
+            font=(self.font_family, 10, "bold"),
+        )
+
+        style.configure(
+            "TButton",
+            background=self.colors["surface_alt"],
+            foreground=self.colors["text"],
+            bordercolor=self.colors["border"],
+            focusthickness=0,
+            focuscolor=self.colors["surface_alt"],
+            padding=(14, 8),
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#334155"), ("pressed", "#475569"), ("disabled", "#202938")],
+            foreground=[("disabled", "#64748b")],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=self.colors["accent"],
+            foreground="#ffffff",
+            bordercolor=self.colors["accent"],
+            focuscolor=self.colors["accent"],
+            font=(self.font_family, 10, "bold"),
+            padding=(16, 10),
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", self.colors["accent_hover"]), ("pressed", self.colors["accent_pressed"]), ("disabled", "#1e3a8a")],
+            foreground=[("disabled", "#bfdbfe")],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground="#111827",
+            foreground=self.colors["text"],
+            insertcolor=self.colors["text"],
+            bordercolor=self.colors["border"],
+            lightcolor=self.colors["border"],
+            darkcolor=self.colors["border"],
+            padding=(10, 7),
+            relief="flat",
+        )
+        style.map("TEntry", bordercolor=[("focus", self.colors["accent"])])
+        style.configure(
+            "TCombobox",
+            fieldbackground="#111827",
+            background="#111827",
+            foreground=self.colors["text"],
+            bordercolor=self.colors["border"],
+            arrowcolor=self.colors["muted"],
+            padding=(8, 6),
+            relief="flat",
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#111827")],
+            bordercolor=[("focus", self.colors["accent"])],
+            arrowcolor=[("active", self.colors["accent"])],
+        )
+
+        style.configure(
+            "TProgressbar",
+            background=self.colors["accent"],
+            troughcolor="#111827",
+            bordercolor="#111827",
+            lightcolor=self.colors["accent"],
+            darkcolor=self.colors["accent"],
+            thickness=12,
+        )
+        style.configure(
+            "Treeview",
+            background="#111827",
+            fieldbackground="#111827",
+            foreground=self.colors["text"],
+            bordercolor=self.colors["border"],
+            rowheight=30,
+            font=(self.font_family, 10),
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=self.colors["surface_alt"],
+            foreground=self.colors["text"],
+            bordercolor=self.colors["border"],
+            font=(self.font_family, 9, "bold"),
+            padding=(8, 8),
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", self.colors["selection"])],
+            foreground=[("selected", self.colors["text"])],
+        )
+        style.configure("Vertical.TScrollbar", background=self.colors["surface_alt"], troughcolor=self.colors["surface"], bordercolor=self.colors["border"])
+        style.configure("Horizontal.TScrollbar", background=self.colors["surface_alt"], troughcolor=self.colors["surface"], bordercolor=self.colors["border"])
+        self.root.option_add("*TCombobox*Listbox.background", "#111827")
+        self.root.option_add("*TCombobox*Listbox.foreground", self.colors["text"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.colors["nav_selected"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
 
     def setup_search_ui(self, parent):
-        top_frame = ttk.Frame(parent)
-        top_frame.pack(fill=tk.X, pady=(0, 10))
+        top_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        top_frame.pack(fill=tk.X, padx=22, pady=(22, 12))
 
-        ttk.Label(top_frame, text="Termo:").pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(top_frame, text="Termo:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 8))
         self.search_var = tk.StringVar()
-        self.entry_search = ttk.Entry(top_frame, textvariable=self.search_var, state="normal")
+        self.entry_search = ctk.CTkEntry(
+            top_frame,
+            textvariable=self.search_var,
+            state="normal",
+            corner_radius=10,
+            height=38,
+            fg_color="#111827",
+            border_color=self.colors["border"],
+            text_color=self.colors["text"],
+        )
         self.entry_search.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         self.entry_search.bind("<Return>", lambda _event: self.start_search(reset=True))
         self.entry_search.bind("<Button-1>", lambda _event: self.entry_search.focus_set())
 
-        self.btn_search = ttk.Button(top_frame, text="Buscar", command=lambda: self.start_search(reset=True))
+        self.btn_search = ctk.CTkButton(
+            top_frame,
+            text="Buscar",
+            command=lambda: self.start_search(reset=True),
+            corner_radius=10,
+            height=38,
+            width=112,
+            fg_color=self.colors["accent"],
+            hover_color=self.colors["accent_hover"],
+            font=(self.font_family, 10, "bold"),
+        )
         self.btn_search.pack(side=tk.LEFT)
 
-        related_frame = ttk.Frame(parent)
-        related_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(related_frame, text="Perto de:").pack(side=tk.LEFT, padx=(0, 8))
+        related_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        related_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
+        ctk.CTkLabel(related_frame, text="Perto de:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 8))
         self.search_related_var = tk.StringVar()
-        self.entry_search_related = ttk.Entry(related_frame, textvariable=self.search_related_var, state="normal")
+        self.entry_search_related = ctk.CTkEntry(
+            related_frame,
+            textvariable=self.search_related_var,
+            state="normal",
+            corner_radius=10,
+            height=34,
+            fg_color="#111827",
+            border_color=self.colors["border"],
+            text_color=self.colors["text"],
+        )
         self.entry_search_related.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         self.entry_search_related.bind("<Return>", lambda _event: self.start_search(reset=True))
-        ttk.Label(related_frame, text="Distância:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(related_frame, text="Distância:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_distance_var = tk.StringVar(value="50 palavras")
-        self.cb_search_distance = ttk.Combobox(
+        self.cb_search_distance = self.create_combo(
             related_frame,
-            textvariable=self.search_distance_var,
+            variable=self.search_distance_var,
             values=["25 palavras", "50 palavras", "100 palavras", "200 palavras"],
             width=12,
-            state="readonly",
+            command=lambda _value: self.on_search_filter_changed(),
         )
         self.cb_search_distance.pack(side=tk.LEFT)
-        self.cb_search_distance.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
-        filters_frame = ttk.Frame(parent)
-        filters_frame.pack(fill=tk.X, pady=(0, 10))
+        filters_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        filters_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
 
-        ttk.Label(filters_frame, text="Ano:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(filters_frame, text="Ano:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_year_var = tk.StringVar(value="Todos")
-        self.cb_search_year = ttk.Combobox(filters_frame, textvariable=self.search_year_var, values=["Todos"], width=14, state="readonly")
+        self.cb_search_year = self.create_combo(filters_frame, variable=self.search_year_var, values=["Todos"], width=116, command=lambda _value: self.on_search_filter_changed("year"))
         self.cb_search_year.pack(side=tk.LEFT, padx=(0, 12))
-        self.cb_search_year.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
-        ttk.Label(filters_frame, text="Mês:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(filters_frame, text="Mês:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_month_var = tk.StringVar(value="Todos")
-        self.cb_search_month = ttk.Combobox(filters_frame, textvariable=self.search_month_var, values=["Todos"], width=14, state="readonly")
+        self.cb_search_month = self.create_combo(filters_frame, variable=self.search_month_var, values=["Todos"], width=116, command=lambda _value: self.on_search_filter_changed())
         self.cb_search_month.pack(side=tk.LEFT, padx=(0, 12))
-        self.cb_search_month.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
         self._populate_initial_search_filters()
 
-        ttk.Label(filters_frame, text="Modo:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(filters_frame, text="Modo:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_match_var = tk.StringVar(value="Todos os termos")
-        self.cb_search_match = ttk.Combobox(
+        self.cb_search_match = self.create_combo(
             filters_frame,
-            textvariable=self.search_match_var,
+            variable=self.search_match_var,
             values=["Todos os termos", "Frase exata", "Contexto próximo"],
-            width=16,
-            state="readonly",
+            width=150,
+            command=lambda _value: self.on_search_filter_changed(),
         )
         self.cb_search_match.pack(side=tk.LEFT, padx=(0, 12))
-        self.cb_search_match.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
-        ttk.Label(filters_frame, text="Ordenar:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(filters_frame, text="Ordenar:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_sort_var = tk.StringVar(value="Relevância")
-        self.cb_search_sort = ttk.Combobox(
+        self.cb_search_sort = self.create_combo(
             filters_frame,
-            textvariable=self.search_sort_var,
+            variable=self.search_sort_var,
             values=["Relevância", "Mais recentes", "Mais antigos"],
-            width=16,
-            state="readonly",
+            width=150,
+            command=lambda _value: self.on_search_filter_changed(),
         )
         self.cb_search_sort.pack(side=tk.LEFT, padx=(0, 12))
-        self.cb_search_sort.bind("<<ComboboxSelected>>", self.on_search_filter_changed)
 
-        self.btn_load_more = ttk.Button(filters_frame, text="Carregar mais", command=lambda: self.start_search(reset=False), state="disabled")
+        self.btn_load_more = ctk.CTkButton(
+            filters_frame,
+            text="Carregar mais",
+            command=lambda: self.start_search(reset=False),
+            state="disabled",
+            corner_radius=10,
+            fg_color=self.colors["surface_alt"],
+            hover_color=self.colors["nav_selected"],
+        )
         self.btn_load_more.pack(side=tk.RIGHT)
 
-        self.lbl_search_summary = ttk.Label(parent, text="Digite um termo para buscar nos PDFs indexados.")
-        self.lbl_search_summary.pack(fill=tk.X, pady=(0, 4))
+        self.lbl_search_summary = ctk.CTkLabel(parent, text="Digite um termo para buscar nos PDFs indexados.", text_color=self.colors["muted"])
+        self.lbl_search_summary.pack(fill=tk.X, padx=22, pady=(0, 4))
 
-        self.lbl_search_warning = ttk.Label(parent, text="", foreground="#a15c00", wraplength=920)
-        self.lbl_search_warning.pack(fill=tk.X, pady=(0, 8))
+        self.lbl_search_warning = ctk.CTkLabel(parent, text="", text_color=self.colors["warning"], wraplength=920)
+        self.lbl_search_warning.pack(fill=tk.X, padx=22, pady=(0, 8))
 
-        table_frame = ttk.Frame(parent)
-        table_frame.pack(fill=tk.BOTH, expand=True)
+        table_frame = ctk.CTkFrame(
+            parent,
+            fg_color="#111827",
+            corner_radius=16,
+            border_width=1,
+            border_color=self.colors["border"],
+        )
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 0))
 
         columns = ("date", "period", "snippet", "path")
         self.search_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        self.search_tree.tag_configure("odd", background="#111827", foreground="#f8fafc")
+        self.search_tree.tag_configure("even", background="#172033", foreground="#f8fafc")
         self.search_tree.heading("date", text="Data")
         self.search_tree.heading("period", text="Ano/Mês")
         self.search_tree.heading("snippet", text="Trecho")
@@ -228,11 +682,25 @@ class TJRRSyncApp:
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
-        actions_frame = ttk.Frame(parent)
-        actions_frame.pack(fill=tk.X, pady=(10, 0))
-        self.btn_open_pdf = ttk.Button(actions_frame, text="Abrir PDF", command=self.open_selected_pdf)
+        actions_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        actions_frame.pack(fill=tk.X, padx=22, pady=(10, 22))
+        self.btn_open_pdf = ctk.CTkButton(
+            actions_frame,
+            text="Abrir PDF",
+            command=self.open_selected_pdf,
+            corner_radius=10,
+            fg_color=self.colors["surface_alt"],
+            hover_color=self.colors["nav_selected"],
+        )
         self.btn_open_pdf.pack(side=tk.LEFT, padx=(0, 8))
-        self.btn_open_folder = ttk.Button(actions_frame, text="Abrir pasta", command=self.open_selected_folder)
+        self.btn_open_folder = ctk.CTkButton(
+            actions_frame,
+            text="Abrir pasta",
+            command=self.open_selected_folder,
+            corner_radius=10,
+            fg_color=self.colors["surface_alt"],
+            hover_color=self.colors["nav_selected"],
+        )
         self.btn_open_folder.pack(side=tk.LEFT)
 
     def start_search(self, reset=True):
@@ -303,7 +771,7 @@ class TJRRSyncApp:
         self.search_month_var.set("Todos")
 
     def on_search_filter_changed(self, _event=None):
-        if _event and _event.widget == self.cb_search_year:
+        if _event == "year" or (_event and getattr(_event, "widget", None) == self.cb_search_year):
             selected_year = self.search_year_var.get()
             try:
                 if selected_year != "Todos":
@@ -351,6 +819,7 @@ class TJRRSyncApp:
                 "",
                 tk.END,
                 iid=iid,
+                tags=("even" if len(self.search_rows) % 2 == 0 else "odd",),
                 values=(
                     result.display_date,
                     f"{result.year}/{result.month}",
@@ -388,10 +857,7 @@ class TJRRSyncApp:
             self.btn_load_more.config(state="normal")
 
     def on_tab_changed(self, _event):
-        selected_tab = self.notebook.tab(self.notebook.select(), "text")
-        if selected_tab == "Busca textual":
-            self.entry_search.config(state="normal")
-            self.root.after(50, self.entry_search.focus_set)
+        self.show_page("search")
 
     def _refresh_filter_values(self, response):
         current_year = self.search_year_var.get()
