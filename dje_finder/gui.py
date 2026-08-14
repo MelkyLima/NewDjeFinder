@@ -41,6 +41,47 @@ for _widget_class in (
 ):
     _widget_class.config = _ctk_config
 
+
+class Tooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.window = None
+        self.after_id = None
+        widget.bind("<Enter>", self.schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def schedule(self, _event=None):
+        self.after_id = self.widget.after(350, self.show)
+
+    def show(self):
+        self.after_id = None
+        if self.window is not None:
+            return
+
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{self.widget.winfo_rootx() + self.widget.winfo_width() + 8}+{self.widget.winfo_rooty() + 8}")
+        tk.Label(
+            self.window,
+            text=self.text,
+            bg="#242d3f",
+            fg="#f8fafc",
+            font=("Segoe UI Semibold", 11),
+            padx=10,
+            pady=6,
+        ).pack()
+
+    def hide(self, _event=None):
+        if self.after_id is not None:
+            self.widget.after_cancel(self.after_id)
+            self.after_id = None
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class TJRRSyncApp:
     def __init__(self, root):
         self.root = root
@@ -84,7 +125,7 @@ class TJRRSyncApp:
         shell_frame = ctk.CTkFrame(self.root, fg_color=self.colors["window"], corner_radius=0)
         shell_frame.pack(fill=tk.BOTH, expand=True)
 
-        sidebar = ctk.CTkFrame(shell_frame, width=230, fg_color=self.colors["sidebar"], corner_radius=0)
+        sidebar = ctk.CTkFrame(shell_frame, width=88, fg_color=self.colors["sidebar"], corner_radius=0)
         sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 0), pady=0)
         sidebar.pack_propagate(False)
 
@@ -98,33 +139,21 @@ class TJRRSyncApp:
             corner_radius=10,
             fg_color=self.colors["accent"],
             text_color="#ffffff",
-            font=(self.font_family, 12, "bold"),
-        ).pack(side=tk.LEFT)
-        ctk.CTkLabel(
-            brand_frame,
-            text="Finder",
-            text_color="#ffffff",
-            font=(self.font_family, 16, "bold"),
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            font=(self.font_family, 13, "bold"),
+        ).pack(anchor=tk.CENTER)
 
         self.nav_buttons = {}
-        self.create_nav_button(sidebar, "sync", "Sincronização").pack(fill=tk.X, padx=14, pady=(0, 8))
-        self.create_nav_button(sidebar, "search", "Busca textual").pack(fill=tk.X, padx=14, pady=(0, 8))
+        self.create_nav_button(sidebar, "sync", "\ue72c", "Sincronização").pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.create_nav_button(sidebar, "search", "\ue721", "Busca textual").pack(fill=tk.X, padx=10, pady=(0, 8))
 
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill=tk.BOTH, expand=True)
-        ctk.CTkLabel(
-            sidebar,
-            text="TJRR PDF Sync",
-            text_color="#7f8ba3",
-            font=(self.font_family, 9),
-        ).pack(anchor=tk.W, padx=16, pady=(12, 18))
 
         content_frame = ctk.CTkFrame(shell_frame, fg_color=self.colors["window"], corner_radius=0)
         content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=22, pady=(20, 22))
 
-        self.page_title = ctk.CTkLabel(content_frame, text="", text_color="#ffffff", font=(self.font_family, 22, "bold"))
+        self.page_title = ctk.CTkLabel(content_frame, text="", text_color="#ffffff", font=(self.font_family, 24, "bold"))
         self.page_title.pack(anchor=tk.W, pady=(0, 4))
-        self.page_subtitle = ctk.CTkLabel(content_frame, text="", text_color=self.colors["muted"], font=(self.font_family, 10))
+        self.page_subtitle = ctk.CTkLabel(content_frame, text="", text_color=self.colors["muted"], font=(self.font_family, 12))
         self.page_subtitle.pack(anchor=tk.W, pady=(0, 18))
 
         page_host = ctk.CTkFrame(content_frame, fg_color="transparent", corner_radius=0)
@@ -157,11 +186,11 @@ class TJRRSyncApp:
             height=44,
             fg_color=self.colors["accent"],
             hover_color=self.colors["accent_hover"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         )
         self.btn_action.pack(side=tk.BOTTOM, fill=tk.X, padx=22, pady=(10, 22))
         
-        self.lbl_erro = ctk.CTkLabel(main_frame, text="", text_color=self.colors["error"], wraplength=900)
+        self.lbl_erro = ctk.CTkLabel(main_frame, text="", text_color=self.colors["error"], wraplength=900, font=(self.font_family, 12))
         self.lbl_erro.pack(side=tk.BOTTOM, fill=tk.X, padx=22)
         
         self.lbl_pdf_atual = ctk.CTkLabel(
@@ -184,7 +213,7 @@ class TJRRSyncApp:
         self.progress_bar.set(0)
         self.progress_bar.pack(fill=tk.X, padx=22, pady=(0, 5))
         
-        self.lbl_pct = ctk.CTkLabel(main_frame, text="0.00%", text_color=self.colors["muted"])
+        self.lbl_pct = ctk.CTkLabel(main_frame, text="0.00%", text_color=self.colors["muted"], font=(self.font_family, 12))
         self.lbl_pct.pack(anchor=tk.E, padx=22, pady=(0, 15))
         
         info_frame = ctk.CTkFrame(
@@ -199,25 +228,25 @@ class TJRRSyncApp:
             info_frame,
             text="Estatísticas",
             text_color=self.colors["text"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         ).pack(anchor=tk.W, padx=16, pady=(14, 8))
         
-        self.lbl_localizados = ctk.CTkLabel(info_frame, text="PDFs Totais localizados: 0", text_color=self.colors["text"])
+        self.lbl_localizados = ctk.CTkLabel(info_frame, text="PDFs Totais localizados: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_localizados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_atualizaveis = ctk.CTkLabel(info_frame, text="Datas pendentes de verificação: 0", text_color=self.colors["text"])
+        self.lbl_atualizaveis = ctk.CTkLabel(info_frame, text="Datas pendentes de verificação: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_atualizaveis.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_baixados = ctk.CTkLabel(info_frame, text="PDFs Totais baixados: 0", text_color=self.colors["text"])
+        self.lbl_baixados = ctk.CTkLabel(info_frame, text="PDFs Totais baixados: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_baixados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_progresso = ctk.CTkLabel(info_frame, text="PDFs em progresso: 0", text_color=self.colors["text"])
+        self.lbl_progresso = ctk.CTkLabel(info_frame, text="PDFs em progresso: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_progresso.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_fila = ctk.CTkLabel(info_frame, text="PDFs na fila: 0", text_color=self.colors["text"])
+        self.lbl_fila = ctk.CTkLabel(info_frame, text="PDFs na fila: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_fila.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_velocidade_real = ctk.CTkLabel(info_frame, text="Velocidade de download: 0 KB/s", text_color=self.colors["muted"])
+        self.lbl_velocidade_real = ctk.CTkLabel(info_frame, text="Velocidade de download: 0 KB/s", text_color=self.colors["muted"], font=(self.font_family, 12))
         self.lbl_velocidade_real.pack(anchor=tk.W, padx=16, pady=(2, 14))
         
         indexer_frame = ctk.CTkFrame(
@@ -232,21 +261,21 @@ class TJRRSyncApp:
             indexer_frame,
             text="Busca Textual (Conteúdo)",
             text_color=self.colors["text"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         ).pack(anchor=tk.W, padx=16, pady=(14, 8))
         
-        self.lbl_indexados = ctk.CTkLabel(indexer_frame, text="PDFs Indexados para busca: 0", text_color=self.colors["text"])
+        self.lbl_indexados = ctk.CTkLabel(indexer_frame, text="PDFs Indexados para busca: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_indexados.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_paginas_indexadas = ctk.CTkLabel(indexer_frame, text="Total de documentos indexados: 0", text_color=self.colors["text"])
+        self.lbl_paginas_indexadas = ctk.CTkLabel(indexer_frame, text="Total de documentos indexados: 0", text_color=self.colors["text"], font=(self.font_family, 12))
         self.lbl_paginas_indexadas.pack(anchor=tk.W, padx=16, pady=2)
         
-        self.lbl_status_indexador = ctk.CTkLabel(indexer_frame, text="Status do buscador: Aguardando...", text_color=self.colors["muted"])
+        self.lbl_status_indexador = ctk.CTkLabel(indexer_frame, text="Status do buscador: Aguardando...", text_color=self.colors["muted"], font=(self.font_family, 12))
         self.lbl_status_indexador.pack(anchor=tk.W, padx=16, pady=(2, 14))
         
         speed_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         speed_frame.pack(fill=tk.X, padx=22, pady=(0, 10))
-        ctk.CTkLabel(speed_frame, text="Modo:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 10))
+        ctk.CTkLabel(speed_frame, text="Modo:", text_color=self.colors["text"], font=(self.font_family, 12)).pack(side=tk.LEFT, padx=(0, 10))
         self.cb_speed = ctk.CTkComboBox(
             speed_frame,
             values=["1 - Lento (1MB/s)", "2 - Rápido (5MB/s)", "3 - Turbo (Ilimitado)"],
@@ -260,6 +289,8 @@ class TJRRSyncApp:
             dropdown_hover_color=self.colors["nav_selected"],
             dropdown_text_color=self.colors["text"],
             text_color=self.colors["text"],
+            font=(self.font_family, 12),
+            dropdown_font=(self.font_family, 12),
         )
         self.cb_speed.set("2 - Rápido (5MB/s)")
         self.cb_speed.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -268,11 +299,6 @@ class TJRRSyncApp:
         self.show_page("sync")
 
     def apply_window_chrome(self):
-        try:
-            self.root.attributes("-alpha", 0.94)
-        except tk.TclError:
-            pass
-
         if os.name != "nt":
             return
 
@@ -289,26 +315,28 @@ class TJRRSyncApp:
 
     def get_modern_font_family(self):
         available_fonts = set(tkfont.families(self.root))
-        if "Segoe UI Variable Text" in available_fonts:
-            return "Segoe UI Variable Text"
-        if "Segoe UI Variable" in available_fonts:
-            return "Segoe UI Variable"
+        # A variante semibold mantém os textos nítidos e mais estáveis em telas Windows.
+        if "Segoe UI Semibold" in available_fonts:
+            return "Segoe UI Semibold"
+        if "Segoe UI Variable Text Semibold" in available_fonts:
+            return "Segoe UI Variable Text Semibold"
         return "Segoe UI"
 
-    def create_nav_button(self, parent, page, text):
+    def create_nav_button(self, parent, page, icon, tooltip):
         button = ctk.CTkButton(
             parent,
-            text=text,
-            anchor="w",
-            height=46,
+            text=icon,
+            anchor="center",
+            height=48,
             corner_radius=12,
             fg_color="transparent",
             hover_color=self.colors["nav_hover"],
             text_color=self.colors["sidebar_text"],
             cursor="hand2",
-            font=(self.font_family, 10, "bold"),
+            font=(self.icon_font_family, 21),
             command=lambda: self.show_page(page),
         )
+        Tooltip(button, tooltip)
         self.nav_buttons[page] = button
         return button
 
@@ -330,8 +358,8 @@ class TJRRSyncApp:
             dropdown_hover_color=self.colors["nav_selected"],
             dropdown_text_color=self.colors["text"],
             text_color=self.colors["text"],
-            font=(self.font_family, 10),
-            dropdown_font=(self.font_family, 10),
+            font=(self.font_family, 12),
+            dropdown_font=(self.font_family, 12),
         )
 
     def update_progress_bar(self, *_args):
@@ -385,9 +413,10 @@ class TJRRSyncApp:
 
         self.root.configure(bg=self.colors["window"])
         self.font_family = self.get_modern_font_family()
-        self.root.option_add("*Font", f"{{{self.font_family}}} 10")
-        tkfont.nametofont("TkDefaultFont").configure(family=self.font_family, size=10)
-        tkfont.nametofont("TkTextFont").configure(family=self.font_family, size=10)
+        self.icon_font_family = "Segoe Fluent Icons" if "Segoe Fluent Icons" in tkfont.families(self.root) else "Segoe UI Symbol"
+        self.root.option_add("*Font", f"{{{self.font_family}}} 12")
+        tkfont.nametofont("TkDefaultFont").configure(family=self.font_family, size=12)
+        tkfont.nametofont("TkTextFont").configure(family=self.font_family, size=12)
 
         style = ttk.Style()
         try:
@@ -395,21 +424,21 @@ class TJRRSyncApp:
         except tk.TclError:
             pass
 
-        style.configure(".", font=(self.font_family, 10), background=self.colors["window"], foreground=self.colors["text"])
+        style.configure(".", font=(self.font_family, 12), background=self.colors["window"], foreground=self.colors["text"])
         style.configure("App.TFrame", background=self.colors["window"])
         style.configure("Sidebar.TFrame", background=self.colors["sidebar"])
         style.configure("TFrame", background=self.colors["window"])
         style.configure("Surface.TFrame", background=self.colors["surface"])
         style.configure("TLabel", background=self.colors["surface"], foreground=self.colors["text"])
         style.configure("Muted.TLabel", background=self.colors["surface"], foreground=self.colors["muted"])
-        style.configure("Title.TLabel", background=self.colors["surface"], foreground=self.colors["text"], font=(self.font_family, 12, "bold"))
+        style.configure("Title.TLabel", background=self.colors["surface"], foreground=self.colors["text"], font=(self.font_family, 14, "bold"))
         style.configure("Error.TLabel", background=self.colors["surface"], foreground=self.colors["error"])
         style.configure("Warning.TLabel", background=self.colors["surface"], foreground=self.colors["warning"])
         style.configure("Brand.TLabel", background=self.colors["sidebar"], foreground="#ffffff", font=(self.font_family, 16, "bold"))
         style.configure("BrandMark.TLabel", background=self.colors["accent"], foreground="#ffffff", font=(self.font_family, 12, "bold"), padding=(10, 6))
-        style.configure("SidebarMuted.TLabel", background=self.colors["sidebar"], foreground="#7f8ba3", font=(self.font_family, 9))
-        style.configure("PageTitle.TLabel", background=self.colors["window"], foreground="#ffffff", font=(self.font_family, 22, "bold"))
-        style.configure("PageSubtitle.TLabel", background=self.colors["window"], foreground=self.colors["muted"], font=(self.font_family, 10))
+        style.configure("SidebarMuted.TLabel", background=self.colors["sidebar"], foreground="#7f8ba3", font=(self.font_family, 11))
+        style.configure("PageTitle.TLabel", background=self.colors["window"], foreground="#ffffff", font=(self.font_family, 24, "bold"))
+        style.configure("PageSubtitle.TLabel", background=self.colors["window"], foreground=self.colors["muted"], font=(self.font_family, 12))
 
         style.configure("TNotebook", background=self.colors["window"], borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure(
@@ -418,7 +447,7 @@ class TJRRSyncApp:
             foreground=self.colors["muted"],
             borderwidth=0,
             padding=(18, 10),
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         )
         style.map(
             "TNotebook.Tab",
@@ -437,7 +466,7 @@ class TJRRSyncApp:
             "Card.TLabelframe.Label",
             background=self.colors["surface"],
             foreground=self.colors["text"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         )
 
         style.configure(
@@ -461,7 +490,7 @@ class TJRRSyncApp:
             foreground="#ffffff",
             bordercolor=self.colors["accent"],
             focuscolor=self.colors["accent"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
             padding=(16, 10),
         )
         style.map(
@@ -514,15 +543,15 @@ class TJRRSyncApp:
             fieldbackground="#111827",
             foreground=self.colors["text"],
             bordercolor=self.colors["border"],
-            rowheight=30,
-            font=(self.font_family, 10),
+            rowheight=34,
+            font=(self.font_family, 12),
         )
         style.configure(
             "Treeview.Heading",
             background=self.colors["surface_alt"],
             foreground=self.colors["text"],
             bordercolor=self.colors["border"],
-            font=(self.font_family, 9, "bold"),
+            font=(self.font_family, 11, "bold"),
             padding=(8, 8),
         )
         style.map(
@@ -566,7 +595,7 @@ class TJRRSyncApp:
             width=112,
             fg_color=self.colors["accent"],
             hover_color=self.colors["accent_hover"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, 12, "bold"),
         )
         self.btn_search.pack(side=tk.LEFT)
 
