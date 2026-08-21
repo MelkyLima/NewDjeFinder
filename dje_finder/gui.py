@@ -24,6 +24,12 @@ from dje_finder.search import (
 )
 from dje_finder.worker import WorkerController
 
+MONTH_NAMES = {
+    "01": "Janeiro", "02": "Fevereiro", "03": "Março", "04": "Abril",
+    "05": "Maio", "06": "Junho", "07": "Julho", "08": "Agosto",
+    "09": "Setembro", "10": "Outubro", "11": "Novembro", "12": "Dezembro",
+}
+
 
 def _ctk_config(self, *args, **kwargs):
     if "foreground" in kwargs:
@@ -82,12 +88,64 @@ class Tooltip:
             self.window = None
 
 
+class ScrollableCTkComboBox(ctk.CTkComboBox):
+    """Combobox arredondado com uma lista rolável para listas longas."""
+
+    def __init__(self, *args, dropdown_height=190, **kwargs):
+        self.dropdown_height = dropdown_height
+        self.dropdown_window = None
+        super().__init__(*args, **kwargs)
+
+    def _open_dropdown_menu(self):
+        self._close_dropdown_menu()
+        self.dropdown_window = ctk.CTkToplevel(self)
+        self.dropdown_window.overrideredirect(True)
+        self.dropdown_window.attributes("-topmost", True)
+        self.dropdown_window.geometry(
+            f"{self.winfo_width()}x{self.dropdown_height}+{self.winfo_rootx()}+{self.winfo_rooty() + self.winfo_height() + 3}"
+        )
+
+        options = ctk.CTkScrollableFrame(
+            self.dropdown_window,
+            fg_color=self._apply_appearance_mode(self._dropdown_menu.cget("fg_color")),
+            corner_radius=8,
+            border_width=1,
+            border_color=self._apply_appearance_mode(self._border_color),
+        )
+        options.pack(fill=tk.BOTH, expand=True)
+        for value in self._values:
+            ctk.CTkButton(
+                options,
+                text=value,
+                height=32,
+                anchor="w",
+                corner_radius=6,
+                fg_color="transparent",
+                hover_color=self._apply_appearance_mode(self._dropdown_menu.cget("hover_color")),
+                text_color=self._apply_appearance_mode(self._dropdown_menu.cget("text_color")),
+                font=self._dropdown_menu.cget("font"),
+                command=lambda selected=value: self._select_option(selected),
+            ).pack(fill=tk.X, padx=4, pady=1)
+
+        self.dropdown_window.bind("<FocusOut>", lambda _event: self._close_dropdown_menu())
+        self.dropdown_window.after_idle(self.dropdown_window.focus_force)
+
+    def _select_option(self, value):
+        self._dropdown_callback(value)
+        self._close_dropdown_menu()
+
+    def _close_dropdown_menu(self):
+        if self.dropdown_window is not None:
+            self.dropdown_window.destroy()
+            self.dropdown_window = None
+
+
 class TJRRSyncApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
         self.root.geometry("1180x760")
-        self.root.minsize(980, 640)
+        self.root.minsize(980, 600)
         self.apply_window_chrome()
         self.root.after(250, self.apply_window_chrome)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -143,16 +201,34 @@ class TJRRSyncApp:
         ).pack(anchor=tk.CENTER)
 
         self.nav_buttons = {}
-        self.create_nav_button(sidebar, "sync", "\ue72c", "Sincronização").pack(fill=tk.X, padx=10, pady=(0, 8))
         self.create_nav_button(sidebar, "search", "\ue721", "Busca textual").pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.create_nav_button(sidebar, "sync", "\ue72c", "Sincronização").pack(fill=tk.X, padx=10, pady=(0, 8))
 
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill=tk.BOTH, expand=True)
 
         content_frame = ctk.CTkFrame(shell_frame, fg_color=self.colors["window"], corner_radius=0)
         content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=22, pady=(20, 22))
 
-        self.page_title = ctk.CTkLabel(content_frame, text="", text_color="#ffffff", font=(self.font_family, 24, "bold"))
-        self.page_title.pack(anchor=tk.W, pady=(0, 4))
+        title_frame = ctk.CTkFrame(content_frame, fg_color="transparent")
+        title_frame.pack(fill=tk.X, anchor=tk.W, pady=(0, 4))
+        
+        self.btn_action = ctk.CTkButton(
+            title_frame,
+            text="\ue72c",
+            width=36,
+            height=36,
+            corner_radius=8,
+            fg_color=self.colors["accent"],
+            hover_color=self.colors["accent_hover"],
+            font=(self.icon_font_family, 18),
+            command=self.toggle_action,
+        )
+        self.action_state = "ATUALIZAR Base de PDFs"
+        self.action_tooltip = Tooltip(self.btn_action, self.action_state)
+        self.btn_action.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.page_title = ctk.CTkLabel(title_frame, text="", text_color="#ffffff", font=(self.font_family, 24, "bold"))
+        self.page_title.pack(side=tk.LEFT)
         self.page_subtitle = ctk.CTkLabel(content_frame, text="", text_color=self.colors["muted"], font=(self.font_family, 12))
         self.page_subtitle.pack(anchor=tk.W, pady=(0, 18))
 
@@ -178,17 +254,7 @@ class TJRRSyncApp:
             "search": search_frame,
         }
         
-        self.btn_action = ctk.CTkButton(
-            main_frame,
-            text="ATUALIZAR Base de PDFs",
-            command=self.toggle_action,
-            corner_radius=12,
-            height=44,
-            fg_color=self.colors["accent"],
-            hover_color=self.colors["accent_hover"],
-            font=(self.font_family, 12, "bold"),
-        )
-        self.btn_action.pack(side=tk.BOTTOM, fill=tk.X, padx=22, pady=(10, 22))
+
         
         self.lbl_erro = ctk.CTkLabel(main_frame, text="", text_color=self.colors["error"], wraplength=900, font=(self.font_family, 12))
         self.lbl_erro.pack(side=tk.BOTTOM, fill=tk.X, padx=22)
@@ -296,7 +362,7 @@ class TJRRSyncApp:
         self.cb_speed.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.setup_search_ui(search_frame)
-        self.show_page("sync")
+        self.show_page("search")
 
     def apply_window_chrome(self):
         if os.name != "nt":
@@ -362,6 +428,33 @@ class TJRRSyncApp:
             dropdown_font=(self.font_family, 12),
         )
 
+    def create_scrollable_combo(self, parent, variable, values, width, command):
+        return ScrollableCTkComboBox(
+            parent,
+            variable=variable,
+            values=values,
+            width=width,
+            height=32,
+            state="readonly",
+            command=command,
+            corner_radius=10,
+            fg_color="#111827",
+            border_color=self.colors["border"],
+            button_color=self.colors["surface_alt"],
+            button_hover_color=self.colors["nav_selected"],
+            dropdown_fg_color="#111827",
+            dropdown_hover_color=self.colors["nav_selected"],
+            dropdown_text_color=self.colors["text"],
+            text_color=self.colors["text"],
+            font=(self.font_family, 12),
+            dropdown_font=(self.font_family, 12),
+        )
+
+    @staticmethod
+    def format_month_option(month):
+        month = str(month).zfill(2)
+        return f"{month} - {MONTH_NAMES.get(month, month)}"
+
     def update_progress_bar(self, *_args):
         if hasattr(self, "progress_bar"):
             self.progress_bar.set(self.progress_var.get() / 100.0)
@@ -390,6 +483,12 @@ class TJRRSyncApp:
         if page == "search":
             self.entry_search.config(state="normal")
             self.root.after(50, self.entry_search.focus_set)
+
+    def set_action_state(self, state_name, icon, enabled=True):
+        self.action_state = state_name
+        self.btn_action.config(text=icon, state="normal" if enabled else "disabled")
+        if hasattr(self, "action_tooltip"):
+            self.action_tooltip.text = state_name
 
     def configure_modern_theme(self):
         self.colors = {
@@ -570,7 +669,14 @@ class TJRRSyncApp:
         top_frame = ctk.CTkFrame(parent, fg_color="transparent")
         top_frame.pack(fill=tk.X, padx=22, pady=(22, 12))
 
-        ctk.CTkLabel(top_frame, text="Termo:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(
+            top_frame,
+            text="Termo:",
+            width=52,
+            anchor="w",
+            text_color=self.colors["text"],
+            font=(self.font_family, 12),
+        ).pack(side=tk.LEFT, padx=(0, 8))
         self.search_var = tk.StringVar()
         self.entry_search = ctk.CTkEntry(
             top_frame,
@@ -601,42 +707,56 @@ class TJRRSyncApp:
 
         related_frame = ctk.CTkFrame(parent, fg_color="transparent")
         related_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
-        ctk.CTkLabel(related_frame, text="Perto de:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(
+            related_frame,
+            text="Perto de:",
+            width=52,
+            anchor="w",
+            text_color=self.colors["text"],
+            font=(self.font_family, 12),
+        ).pack(side=tk.LEFT, padx=(0, 8))
         self.search_related_var = tk.StringVar()
         self.entry_search_related = ctk.CTkEntry(
             related_frame,
             textvariable=self.search_related_var,
             state="normal",
             corner_radius=10,
-            height=34,
+            height=38,
             fg_color="#111827",
             border_color=self.colors["border"],
             text_color=self.colors["text"],
         )
         self.entry_search_related.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         self.entry_search_related.bind("<Return>", lambda _event: self.start_search(reset=True))
-        ctk.CTkLabel(related_frame, text="Distância:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
-        self.search_distance_var = tk.StringVar(value="50 palavras")
+        self.search_distance_var = tk.StringVar(value="Médio")
         self.cb_search_distance = self.create_combo(
             related_frame,
             variable=self.search_distance_var,
-            values=["25 palavras", "50 palavras", "100 palavras", "200 palavras"],
-            width=12,
-            command=lambda _value: self.on_search_filter_changed(),
+            values=["Próximo", "Médio", "Distante"],
+            width=112,
+            command=lambda _value: self.on_search_filter_changed("distance"),
         )
+        self.cb_search_distance.configure(height=38)
         self.cb_search_distance.pack(side=tk.LEFT)
 
         filters_frame = ctk.CTkFrame(parent, fg_color="transparent")
         filters_frame.pack(fill=tk.X, padx=22, pady=(0, 12))
 
-        ctk.CTkLabel(filters_frame, text="Ano:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkLabel(
+            filters_frame,
+            text="Ano:",
+            width=52,
+            anchor="w",
+            text_color=self.colors["text"],
+            font=(self.font_family, 12),
+        ).pack(side=tk.LEFT, padx=(0, 8))
         self.search_year_var = tk.StringVar(value="Todos")
-        self.cb_search_year = self.create_combo(filters_frame, variable=self.search_year_var, values=["Todos"], width=116, command=lambda _value: self.on_search_filter_changed("year"))
+        self.cb_search_year = self.create_scrollable_combo(filters_frame, variable=self.search_year_var, values=["Todos"], width=116, command=lambda _value: self.on_search_filter_changed("year"))
         self.cb_search_year.pack(side=tk.LEFT, padx=(0, 12))
 
         ctk.CTkLabel(filters_frame, text="Mês:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
         self.search_month_var = tk.StringVar(value="Todos")
-        self.cb_search_month = self.create_combo(filters_frame, variable=self.search_month_var, values=["Todos"], width=116, command=lambda _value: self.on_search_filter_changed())
+        self.cb_search_month = self.create_scrollable_combo(filters_frame, variable=self.search_month_var, values=["Todos"], width=160, command=lambda _value: self.on_search_filter_changed())
         self.cb_search_month.pack(side=tk.LEFT, padx=(0, 12))
 
         self._populate_initial_search_filters()
@@ -653,7 +773,7 @@ class TJRRSyncApp:
         self.cb_search_match.pack(side=tk.LEFT, padx=(0, 12))
 
         ctk.CTkLabel(filters_frame, text="Ordenar:", text_color=self.colors["text"]).pack(side=tk.LEFT, padx=(0, 6))
-        self.search_sort_var = tk.StringVar(value="Relevância")
+        self.search_sort_var = tk.StringVar(value="Mais recentes")
         self.cb_search_sort = self.create_combo(
             filters_frame,
             variable=self.search_sort_var,
@@ -669,8 +789,10 @@ class TJRRSyncApp:
             command=lambda: self.start_search(reset=False),
             state="disabled",
             corner_radius=10,
+            width=112,
             fg_color=self.colors["surface_alt"],
             hover_color=self.colors["nav_selected"],
+            font=(self.font_family, 12),
         )
         self.btn_load_more.pack(side=tk.RIGHT)
 
@@ -680,6 +802,9 @@ class TJRRSyncApp:
         self.lbl_search_warning = ctk.CTkLabel(parent, text="", text_color=self.colors["warning"], wraplength=920)
         self.lbl_search_warning.pack(fill=tk.X, padx=22, pady=(0, 8))
 
+        actions_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        actions_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=22, pady=(10, 22))
+
         table_frame = ctk.CTkFrame(
             parent,
             fg_color="#111827",
@@ -687,20 +812,19 @@ class TJRRSyncApp:
             border_width=1,
             border_color=self.colors["border"],
         )
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 0))
+        table_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=22, pady=(0, 0))
 
-        columns = ("date", "period", "snippet", "path")
+        columns = ("date", "snippet")
         self.search_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
         self.search_tree.tag_configure("odd", background="#111827", foreground="#f8fafc")
         self.search_tree.tag_configure("even", background="#172033", foreground="#f8fafc")
-        self.search_tree.heading("date", text="Data")
-        self.search_tree.heading("period", text="Ano/Mês")
+        self.search_tree.heading("date", text="Data ▼", command=self.toggle_date_sort)
         self.search_tree.heading("snippet", text="Trecho")
-        self.search_tree.heading("path", text="Arquivo")
         self.search_tree.column("date", width=90, minwidth=80, stretch=False)
-        self.search_tree.column("period", width=80, minwidth=70, stretch=False)
-        self.search_tree.column("snippet", width=520, minwidth=260, stretch=True)
-        self.search_tree.column("path", width=220, minwidth=120, stretch=True)
+        self.search_tree.column("snippet", width=740, minwidth=260, stretch=True)
+        
+        self.search_tree.bind("<Double-1>", lambda e: self.open_selected_pdf())
+        self.search_tree.bind("<Return>", lambda e: self.open_selected_pdf())
 
         y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.search_tree.yview)
         x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.search_tree.xview)
@@ -710,9 +834,6 @@ class TJRRSyncApp:
         x_scroll.grid(row=1, column=0, sticky="ew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
-
-        actions_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        actions_frame.pack(fill=tk.X, padx=22, pady=(10, 22))
         self.btn_open_pdf = ctk.CTkButton(
             actions_frame,
             text="Abrir PDF",
@@ -789,7 +910,7 @@ class TJRRSyncApp:
             else:
                 available_months = self.search_engine.get_available_months()
             if available_months:
-                months.extend(available_months)
+                months.extend(self.format_month_option(month) for month in available_months)
         except Exception:
             available_years = []
             available_months = []
@@ -799,7 +920,25 @@ class TJRRSyncApp:
         self.search_year_var.set("Todos")
         self.search_month_var.set("Todos")
 
+    def toggle_date_sort(self):
+        current_sort = self.search_sort_var.get()
+        if current_sort == "Mais recentes":
+            new_sort = "Mais antigos"
+        else:
+            new_sort = "Mais recentes"
+            
+        self.search_sort_var.set(new_sort)
+        self.on_search_filter_changed()
+
     def on_search_filter_changed(self, _event=None):
+        current_sort = self.search_sort_var.get()
+        if current_sort == "Mais recentes":
+            self.search_tree.heading("date", text="Data ▼")
+        elif current_sort == "Mais antigos":
+            self.search_tree.heading("date", text="Data ▲")
+        else:
+            self.search_tree.heading("date", text="Data")
+            
         if _event == "year" or (_event and getattr(_event, "widget", None) == self.cb_search_year):
             selected_year = self.search_year_var.get()
             try:
@@ -807,14 +946,15 @@ class TJRRSyncApp:
                     available_months = self.search_engine.get_available_months(selected_year)
                 else:
                     available_months = self.search_engine.get_available_months()
-                month_values = ["Todos"] + (available_months or [])
+                month_values = ["Todos"] + [self.format_month_option(month) for month in (available_months or [])]
                 self.cb_search_month.config(values=month_values)
                 if self.search_month_var.get() not in month_values:
                     self.search_month_var.set("Todos")
             except Exception:
                 pass
 
-        if self.search_var.get().strip() and not self.search_in_progress:
+        distance_changed_without_related_term = _event == "distance" and not self.search_related_var.get().strip()
+        if self.search_var.get().strip() and not self.search_in_progress and not distance_changed_without_related_term:
             self.start_search(reset=True)
 
     def _run_search(self, request_id, query, year, month, sort, offset, match_mode, related_query, context_distance):
@@ -851,9 +991,7 @@ class TJRRSyncApp:
                 tags=("even" if len(self.search_rows) % 2 == 0 else "odd",),
                 values=(
                     result.display_date,
-                    f"{result.year}/{result.month}",
                     result.snippet,
-                    str(result.pdf_path),
                 ),
             )
 
@@ -892,7 +1030,7 @@ class TJRRSyncApp:
         current_year = self.search_year_var.get()
         current_month = self.search_month_var.get()
         year_values = ["Todos"] + [f"{year} ({count})" for year, count in sorted(response.year_counts.items(), reverse=True)]
-        month_values = ["Todos"] + [f"{month} ({count})" for month, count in sorted(response.month_counts.items())]
+        month_values = ["Todos"] + [self.format_month_option(month) for month in sorted(response.month_counts)]
         self.cb_search_year.config(values=year_values)
         self.cb_search_month.config(values=month_values)
         current_year_value = self._selected_filter_value(current_year, 4)
@@ -932,11 +1070,12 @@ class TJRRSyncApp:
         return MATCH_ALL_TERMS
 
     def _selected_context_distance(self):
-        value = self.search_distance_var.get().split(" ", 1)[0]
-        try:
-            return int(value)
-        except ValueError:
-            return 50
+        distances = {
+            "Próximo": 25,
+            "Médio": 75,
+            "Distante": 200,
+        }
+        return distances.get(self.search_distance_var.get(), 75)
 
     def get_selected_search_result(self):
         selection = self.search_tree.selection()
@@ -982,7 +1121,7 @@ class TJRRSyncApp:
             else:
                 self.state_mgr.clear()
         
-        self.btn_action.config(text="Preparando base local...", state="disabled")
+        self.set_action_state("Preparando base local...", "\ue895", enabled=False)
         self.cb_speed.config(state="disabled")
         self.lbl_pdf_atual.config(text="Preparando base local. Aguarde...")
 
@@ -1048,20 +1187,23 @@ class TJRRSyncApp:
         )
         
         if self.state_mgr.data.get("atualizaveis", 0) == 0 and self.state_mgr.data.get("localizados", 0) > 0:
-            self.btn_action.config(text="Rechecar Base", state="normal")
+            self.set_action_state("Rechecar Base", "\ue72c", enabled=True)
             self.lbl_pdf_atual.config(text=self.get_finished_text())
             self.progress_var.set(100.0)
             self.lbl_pct.config(text="100.00%")
         else:
-            self.btn_action.config(text="ATUALIZAR Base de PDFs", state="normal")
+            self.set_action_state("ATUALIZAR Base de PDFs", "\ue72c", enabled=True)
             self.lbl_pdf_atual.config(text="PDF atual: Aguardando...")
             
         self.worker.start_background_indexing()
         self.indexing_in_progress = True
+        
+        # Auto start action after initial prep
+        self.root.after(500, self.toggle_action)
 
     def fail_initial_queue(self, error):
         self.initializing = False
-        self.btn_action.config(text="ATUALIZAR Base de PDFs", state="normal")
+        self.set_action_state("ATUALIZAR Base de PDFs", "\ue72c", enabled=True)
         self.cb_speed.config(state="readonly")
         self.lbl_pdf_atual.config(text="Não foi possível preparar a base local.")
         self.lbl_erro.config(text=f"Erro ao preparar base local: {error}")
@@ -1072,24 +1214,24 @@ class TJRRSyncApp:
     def toggle_action(self):
         if self.initializing:
             return
-        txt = self.btn_action.cget("text")
+        txt = self.action_state
         speed_cfg = self.get_speed_config()
         if txt in ("ATUALIZAR Base de PDFs", "Rechecar Base"):
-            self.btn_action.config(text="Pausar")
+            self.set_action_state("Pausar", "\ue769", enabled=True)
             self.cb_speed.config(state="disabled")
             
             if txt == "Rechecar Base":
-                self.btn_action.config(text="Preparando...", state="disabled")
+                self.set_action_state("Preparando...", "\ue895", enabled=False)
                 self.lbl_pdf_atual.config(text="PDF atual: Rechecando base...")
                 threading.Thread(target=self._rebuild_and_start, args=(speed_cfg,), daemon=True).start()
             else:
                 self.worker.start(speed_cfg)
         elif txt == "Pausar":
-            self.btn_action.config(text="Retomar")
+            self.set_action_state("Retomar", "\ue768", enabled=True)
             self.cb_speed.config(state="readonly")
             self.worker.pause()
         elif txt == "Retomar":
-            self.btn_action.config(text="Pausar")
+            self.set_action_state("Pausar", "\ue769", enabled=True)
             self.cb_speed.config(state="disabled")
             self.worker.resume(speed_cfg)
 
@@ -1143,17 +1285,17 @@ class TJRRSyncApp:
                     if msg["error"]:
                         self.lbl_erro.config(text=f"Último erro: {msg['error']}")
                 elif msg["type"] == "checking_connection":
-                    self.btn_action.config(text="Verificando...", state="disabled")
+                    self.set_action_state("Verificando...", "\ue895", enabled=False)
                     self.cb_speed.config(state="disabled")
                     self.lbl_pdf_atual.config(text="Verificando internet e portal...")
                     self.lbl_erro.config(text="")
                 elif msg["type"] == "sync_started":
-                    self.btn_action.config(text="Pausar", state="normal")
+                    self.set_action_state("Pausar", "\ue769", enabled=True)
                     self.cb_speed.config(state="disabled")
                 elif msg["type"] == "connection_error":
                     has_queue = len(self.state_mgr.data.get("fila_restante", [])) > 0 or len(self.state_mgr.data.get("em_andamento", [])) > 0
                     btn_text = "Retomar" if has_queue else "ATUALIZAR Base de PDFs"
-                    self.btn_action.config(text=btn_text, state="normal")
+                    self.set_action_state(btn_text, "\ue768" if has_queue else "\ue72c", enabled=True)
                     self.cb_speed.config(state="readonly")
                     if msg["error_type"] == "internet":
                         msg_err = "Sem conexão ativa com a internet. A base local foi verificada, mas a sincronização online está pausada."
@@ -1164,14 +1306,14 @@ class TJRRSyncApp:
                     self.lbl_pdf_atual.config(text="Sincronização online pausada.")
                     self.lbl_erro.config(text=msg_err)
                 elif msg["type"] == "portal_unstable":
-                    self.btn_action.config(text="Retomar", state="normal")
+                    self.set_action_state("Retomar", "\ue768", enabled=True)
                     self.cb_speed.config(state="readonly")
                     msg_err = f"Portal TJRR apresentou instabilidade recente ({msg.get('error')}). A sincronização online foi pausada."
                     self.lbl_pdf_atual.config(text="Sincronização online pausada por instabilidade.")
                     self.lbl_erro.config(text=msg_err)
                 elif msg["type"] == "done":
                     self.worker.finish()
-                    self.btn_action.config(text="Rechecar Base", state="normal")
+                    self.set_action_state("Rechecar Base", "\ue72c", enabled=True)
                     self.cb_speed.config(state="readonly")
                     self.lbl_pdf_atual.config(text=self.get_finished_text())
                     self.progress_var.set(100.0)
@@ -1187,17 +1329,17 @@ class TJRRSyncApp:
                         restantes=len(self.state_mgr.data.get("fila_restante", []))
                     )
                     if atualizaveis > 0:
-                        self.btn_action.config(text="Pausar", state="normal")
+                        self.set_action_state("Pausar", "\ue769", enabled=True)
                         self.worker.start(msg["speed_cfg"])
                     else:
-                        self.btn_action.config(text="Rechecar Base", state="normal")
+                        self.set_action_state("Rechecar Base", "\ue72c", enabled=True)
                         self.cb_speed.config(state="readonly")
                         self.lbl_pdf_atual.config(text=self.get_finished_text())
                         self.progress_var.set(100.0)
                         self.lbl_pct.config(text="100.00%")
                 elif msg["type"] == "done_with_errors":
                     self.worker.finish(clear_state=False)
-                    self.btn_action.config(text="Rechecar Base", state="normal")
+                    self.set_action_state("Rechecar Base", "\ue72c", enabled=True)
                     self.cb_speed.config(state="readonly")
                     self.lbl_pdf_atual.config(text="PDF atual: Concluído com falhas.")
                     self.lbl_erro.config(

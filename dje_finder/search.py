@@ -8,7 +8,7 @@ from dje_finder.config import Config
 from dje_finder.persistence import get_db_connection
 
 
-PAGE_SIZE = 50
+PAGE_SIZE = 10
 SORT_RELEVANCE = "relevance"
 SORT_NEWEST = "newest"
 SORT_OLDEST = "oldest"
@@ -232,7 +232,13 @@ class PDFSearchEngine:
             match_part = "pdf_pages_fts MATCH ?" if normalized_query else None
             like_part = " AND ".join("f.content LIKE ?" for _ in like_tokens) if like_tokens else None
 
-            if match_part and like_part:
+            if match_mode == MATCH_NEAR_CONTEXT and related_query:
+                # SQLite FTS5 não permite MATCH dentro de uma expressão OR.
+                # No modo de contexto, o filtro FTS já contém os dois termos;
+                # a validação final de proximidade é feita em Python abaixo.
+                base_where = match_part
+                base_params = [normalized_query]
+            elif match_part and like_part:
                 base_where = f"({match_part} OR ({like_part}))"
                 base_params = [normalized_query] + [f"%{t}%" for t in like_tokens]
             elif match_part:

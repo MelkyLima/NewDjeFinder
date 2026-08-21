@@ -57,7 +57,7 @@ def result_rows(results):
 
 
 def render_main_filters():
-    query = st.text_input("", placeholder="Informe um termo para busca no DJE")
+    query = st.text_input("Termo de busca", placeholder="Informe um termo para busca no DJE", label_visibility="collapsed")
     related_query = st.text_input("Contexto", placeholder="Informe um segundo termo para busca no DJE (Opcional)")
 
     cols = st.columns([3, 2])
